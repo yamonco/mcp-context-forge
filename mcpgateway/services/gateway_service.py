@@ -4702,6 +4702,9 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
                             async with ClientSession(read_stream, write_stream) as session:
                                 response = await session.initialize()
 
+                    # Reset failure counter on any successful health check
+                    self._gateway_failure_counts[gateway_id] = 0
+
                     # Reactivate gateway if it was previously inactive and health check passed now
                     if gateway_enabled and not gateway_reachable:
                         logger.info("Reactivating gateway: %s, as it is healthy now", gateway_name)
