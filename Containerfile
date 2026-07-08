@@ -83,8 +83,6 @@ RUN if [ "$ENABLE_RUST" != "true" ]; then \
         printf 'echo "Rust MCP runtime not built into this image. Rebuild with --build-arg ENABLE_RUST=true." >&2\n' >> /build/target/release/contextforge-mcp-runtime; \
         printf 'exit 1\n' >> /build/target/release/contextforge-mcp-runtime; \
         chmod +x /build/target/release/contextforge-mcp-runtime; \
-
-        exit 0; \
     fi
 
 # Install system deps + Rust toolchain in a single layer (only if ENABLE_RUST=true)
@@ -291,9 +289,9 @@ RUN set -euo pipefail \
     && /app/.venv/bin/pip install --no-cache-dir --upgrade pip setuptools wheel uv \
     && if [ -n "$(ls -A /tmp/wheels/*.whl 2>/dev/null)" ]; then \
         echo "📦 Hermetic install from prebuilt wheel closure"; \
-        /app/.venv/bin/uv pip install --no-index --find-links=/tmp/wheels ".[redis,observability,granian,plugins,llmchat]" "psycopg[c]>=3.3.3"; \
+        /app/.venv/bin/uv pip install --no-index --find-links=/tmp/wheels ".[redis,observability,plugins,llmchat]" "psycopg[c]>=3.3.3"; \
     else \
-        /app/.venv/bin/uv pip install ".[redis,postgres,observability,granian,plugins,llmchat]"; \
+        /app/.venv/bin/uv pip install ".[redis,postgres,observability,plugins,llmchat]"; \
     fi \
     && echo "✅ Plugins installed from PyPI via [plugins] extra" \
     && if [ "$ENABLE_RUST" = "true" ] && ls "/tmp/local-native-extension-wheels/"*.whl 1> /dev/null 2>&1; then \
@@ -351,7 +349,7 @@ RUN /tmp/download-cdn-assets.sh \
 #   - gunicorn config + mcp catalog (rare/occasional)
 #   - mcpgateway/ + plugins/ (change most often)
 # ----------------------------------------------------------------------------
-COPY --chmod=0755 run-gunicorn.sh run-granian.sh docker-entrypoint.sh run.sh /app/
+COPY --chmod=0755 run-gunicorn.sh docker-entrypoint.sh run.sh /app/
 COPY gunicorn.config.py mcp-catalog.yml /app/
 COPY mcpgateway/ /app/mcpgateway/
 COPY plugins/ /app/plugins/
@@ -514,12 +512,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 # ----------------------------------------------------------------------------
 # Entrypoint
 # ----------------------------------------------------------------------------
-# HTTP server selection via HTTP_SERVER environment variable:
-#   - gunicorn : Python-based with Uvicorn workers (default)
-#   - granian  : Rust-based HTTP server (alternative)
-#
-# Examples:
-#   docker run -e HTTP_SERVER=gunicorn mcpgateway  # Default
-#   docker run -e HTTP_SERVER=granian mcpgateway   # Alternative
-ENV HTTP_SERVER=gunicorn
+# HTTP server: Gunicorn with Uvicorn workers
 CMD ["./docker-entrypoint.sh"]

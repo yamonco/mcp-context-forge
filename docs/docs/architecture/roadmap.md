@@ -560,7 +560,6 @@
     - ✅ [**#2340**](https://github.com/IBM/mcp-context-forge/issues/2340) - [BUG]: RBAC middleware holds database sessions for entire request duration
     - ✅ [**#2346**](https://github.com/IBM/mcp-context-forge/issues/2346) - [BUG]: Root actions are (mostly) all broken
     - ✅ [**#2348**](https://github.com/IBM/mcp-context-forge/issues/2348) - [BUG]: Schema validation behavior change may cause runtime errors
-    - ✅ [**#2357**](https://github.com/IBM/mcp-context-forge/issues/2357) - [BUG]: (sse): Granian CPU spikes to 800% after load stops, recovers when load resumes
     - ✅ [**#2360**](https://github.com/IBM/mcp-context-forge/issues/2360) - [BUG]: anyio cancel scope spin loop causes 100% CPU after load test stops
     - ✅ [**#2378**](https://github.com/IBM/mcp-context-forge/issues/2378) - [BUG][SONAR][LOW]: Missing expires_at calculation in DCR client registration
     - ✅ [**#2386**](https://github.com/IBM/mcp-context-forge/issues/2386) - [BUG][AUTH]: SSO admin tokens include teams key, preventing unrestricted admin bypass
@@ -789,7 +788,6 @@
     - ✅ [**#1687**](https://github.com/IBM/mcp-context-forge/issues/1687) - [PERFORMANCE]: Optimize Admin UI Dashboard Queries
     - ✅ [**#1691**](https://github.com/IBM/mcp-context-forge/issues/1691) - [PERFORMANCE]: Optimize Gateway Health Check Timeout
     - ✅ [**#1692**](https://github.com/IBM/mcp-context-forge/issues/1692) - [PERFORMANCE]: Replace Explicit JSONResponse with ORJSONResponse
-    - ✅ [**#1695**](https://github.com/IBM/mcp-context-forge/issues/1695) - [PERFORMANCE]: Migrate from Gunicorn to Granian HTTP Server
     - ✅ [**#1696**](https://github.com/IBM/mcp-context-forge/issues/1696) - [PERFORMANCE]: Replace stdlib json with orjson throughout codebase for less frequently used json.loads and json.dumps
     - ✅ [**#1699**](https://github.com/IBM/mcp-context-forge/issues/1699) - [PERFORMANCE]: Adopt uvicorn[standard] for Enhanced Server Performance
     - ✅ [**#1702**](https://github.com/IBM/mcp-context-forge/issues/1702) - [PERFORMANCE]: Add Hiredis as Default Redis Parser with Fallback Option
@@ -837,7 +835,6 @@
     - ✅ [**#1837**](https://github.com/IBM/mcp-context-forge/issues/1837) - [PERFORMANCE]: Avoid eager f-string logging in hot paths
     - ✅ [**#1838**](https://github.com/IBM/mcp-context-forge/issues/1838) - [PERFORMANCE]: Avoid bytes→str decode in SSE transport serialization
     - ✅ [**#1844**](https://github.com/IBM/mcp-context-forge/issues/1844) - [PERFORMANCE]: Add optional monitoring profile for load testing (Prometheus + Grafana + exporters)
-    - ✅ [**#1859**](https://github.com/IBM/mcp-context-forge/issues/1859) - Enable Granian Server Backpressure for Overload Protection
     - ✅ [**#1861**](https://github.com/IBM/mcp-context-forge/issues/1861) - [PERFORMANCE]: PostgreSQL Read Replicas for Horizontal Scaling
     - ✅ [**#1879**](https://github.com/IBM/mcp-context-forge/issues/1879) - [PERFORMANCE]: Fix N+1 Query in list_tools - Missing joinedload for gateway
     - ✅ [**#1880**](https://github.com/IBM/mcp-context-forge/issues/1880) - [PERFORMANCE]: Fix N+1 Query in list_prompts - Missing joinedload for gateway

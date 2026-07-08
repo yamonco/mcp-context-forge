@@ -186,9 +186,9 @@ jobs:
 
             - name: Start fast-time-server
               run: |
-                  docker rm -f fast-time-server 2>/dev/null || true
+                  docker rm -f fast-time-${{ matrix.plugin.name }} 2>/dev/null || true
                   docker run --detach \
-                    --name fast-time-server \
+                    --name fast-time-${{ matrix.plugin.name }} \
                     --publish 127.0.0.1:9080:9080 \
                     ghcr.io/ibm/cfex-mcp-fast-time-server:5eac210da1c96a5fb2386c82a0c6f543b68fd76a
 
@@ -204,7 +204,7 @@ jobs:
 
                   if ! curl -s http://localhost:9080/health >/dev/null 2>&1; then
                     echo "ERROR: fast-time-server failed to start"
-                    docker logs fast-time-server
+                    docker logs fast-time-${{ matrix.plugin.name }}
                     exit 1
                   fi
 
@@ -259,7 +259,7 @@ jobs:
                   LOG_LEVEL: INFO
               run: |
                   make stop-serve || true
-                  make serve > gateway.log 2>&1 &
+                  make serve > gateway-${{ matrix.plugin.name }}.log 2>&1 &
 
                   echo "Waiting for gateway to start..."
                   for i in {1..60}; do
@@ -273,7 +273,7 @@ jobs:
 
                   if ! curl -s http://localhost:4444 >/dev/null 2>&1; then
                     echo "ERROR: gateway failed to start (plugin import may have failed)"
-                    cat gateway.log
+                    cat gateway-${{ matrix.plugin.name }}.log
                     exit 1
                   fi
 
@@ -294,7 +294,7 @@ jobs:
 
             - name: Capture fast-time-server logs on failure
               if: failure()
-              run: docker logs fast-time-server > fast-time-server.log 2>&1 || true
+              run: docker logs fast-time-${{ matrix.plugin.name }} > fast-time-${{ matrix.plugin.name }}.log 2>&1 || true
 
             - name: Upload logs on failure
               if: failure()
@@ -302,8 +302,8 @@ jobs:
               with:
                   name: plugin-e2e-${{ matrix.plugin.name }}-${{ matrix.plugin.enforcement }}-logs
                   path: |
-                      gateway.log
-                      fast-time-server.log
+                      gateway-${{ matrix.plugin.name }}.log
+                      fast-time-${{ matrix.plugin.name }}.log
                   if-no-files-found: ignore
 
     # Aggregation gate: a single, stable check name that branch protection /

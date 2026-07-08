@@ -114,7 +114,10 @@ def upgrade() -> None:
                 "Run 'alembic downgrade -1' to roll back this migration manually."
             )
         else:
-            raise RuntimeError(f"Migration failed with {len(failures)} error(s):\n  - {error_summary}\n\n" "PostgreSQL will automatically roll back all changes in this transaction.")
+            raise RuntimeError(
+                f"Migration failed with {len(failures)} error(s):\n  - {error_summary}\n\n"
+                "PostgreSQL will automatically roll back all changes in this transaction."
+            )
 
 
 def downgrade() -> None:
@@ -196,4 +199,7 @@ def downgrade() -> None:
                 "Run 'alembic downgrade -1' again or manually inspect schema state."
             )
         else:
-            raise RuntimeError(f"Migration downgrade failed with {len(failures)} error(s):\n  - {error_summary}\n\n" "PostgreSQL will automatically roll back all changes in this transaction.")
+            raise RuntimeError(
+                f"Migration downgrade failed with {len(failures)} error(s):\n  - {error_summary}\n\n"
+                "PostgreSQL will automatically roll back all changes in this transaction."
+            )
