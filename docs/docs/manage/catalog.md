@@ -246,21 +246,29 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
 # Via CLI
 mcpgateway catalog list
 
-# Via API
+# Via authenticated v1 API (requires servers.read)
 curl -H "Authorization: Bearer $TOKEN" \
-  http://localhost:4444/admin/catalog/servers
+  http://localhost:4444/v1/catalog
 ```
+
+The `MCPGATEWAY_CATALOG_ENABLED` flag controls catalog loading, the Admin UI, and the `/v1/catalog` endpoint. When
+disabled, `/v1/catalog` returns `404 Not Found`.
+
+Registration state is caller-scoped: `is_registered` and `requires_oauth_config` only reflect gateways visible through
+the caller's public, team, and private ownership scope. Scoped API responses bypass the shared catalog-response cache
+to prevent registration state from leaking between callers. See the
+[API Usage Guide](api-usage.md#catalog-management) for all filters and the response schema.
 
 ### Filtering by Tags
 
 ```bash
 # List all production servers
 curl -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:4444/admin/catalog/servers?tag=production"
+  "http://localhost:4444/v1/catalog?tags=production"
 
 # List all database servers
 curl -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:4444/admin/catalog/servers?tag=database"
+  "http://localhost:4444/v1/catalog?tags=database"
 ```
 
 ---

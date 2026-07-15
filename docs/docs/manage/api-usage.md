@@ -79,6 +79,58 @@ Most API requests require JWT Bearer token authentication (public endpoints incl
 curl -H "Authorization: Bearer $TOKEN" $BASE_URL/endpoint
 ```
 
+## Catalog Management
+
+`GET /v1/catalog` lists MCP servers defined in the configured catalog. The endpoint requires authentication and the
+`servers.read` permission. It is available only when `MCPGATEWAY_CATALOG_ENABLED=true`; otherwise it returns
+`404 Not Found`.
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "$BASE_URL/v1/catalog?category=Development&tags=git&tags=repository&limit=25&offset=0" | jq '.'
+```
+
+### Catalog Query Parameters
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `category` | Match an exact catalog category | unset |
+| `auth_type` | Match an exact authentication type | unset |
+| `provider` | Match an exact provider | unset |
+| `search` | Case-insensitive search in server name and description | unset |
+| `tags` | Match any supplied tag; repeat the parameter for multiple tags | unset |
+| `show_registered_only` | Return only servers registered in a gateway visible to the caller | `false` |
+| `show_available_only` | Return only available servers | `true` |
+| `limit` | Maximum number of matching servers returned | `100` |
+| `offset` | Number of matching servers to skip | `0` |
+
+The response uses the `CatalogListResponse` structure:
+
+```json
+{
+  "servers": [],
+  "total": 0,
+  "categories": ["Development"],
+  "auth_types": ["OAuth2.1"],
+  "providers": ["IBM"],
+  "all_tags": ["git", "repository"]
+}
+```
+
+`servers` contains catalog server objects. `total` counts matching servers before `limit` and `offset` are applied.
+The remaining arrays contain available filter values from the complete catalog.
+
+### Scoped Registration State
+
+The catalog definition itself is shared, but each server's `is_registered` and `requires_oauth_config` fields reflect
+only registered gateways visible to the caller. Public gateways are visible to authenticated callers. Team gateways
+require matching team scope, and private gateways require ownership. Public-only or unrelated-team tokens do not learn
+registration state from hidden gateways.
+
+Scoped requests bypass the shared catalog-response cache so one caller's registration state cannot be reused for
+another caller. Layer 1 visibility controls this registration-state view; the independent `servers.read` RBAC check
+controls access to the endpoint.
+
 ## Pagination
 
 !!! info "Default Pagination Behavior"

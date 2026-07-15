@@ -642,6 +642,21 @@ def test_can_view_registered_gateway_denies_unknown_visibility():
     assert CatalogService._can_view_registered_gateway(MagicMock(), "unknown", None, "owner@example.com", "user@example.com", ["team-a"]) is False
 
 
+@pytest.mark.parametrize(
+    ("visibility", "team_id", "owner_email", "token_teams", "expected"),
+    [
+        ("public", None, None, [], True),
+        ("team", "team-a", "owner@example.com", ["team-a"], True),
+        ("team", "team-b", "owner@example.com", ["team-a"], False),
+        ("private", None, "user@example.com", ["team-a"], True),
+        ("private", None, "other@example.com", ["team-a"], False),
+    ],
+)
+def test_can_view_registered_gateway_non_admin_visibility_matrix(visibility, team_id, owner_email, token_teams, expected):
+    """Non-admin catalog visibility follows public, team, and private ownership rules."""
+    assert CatalogService._can_view_registered_gateway(MagicMock(), visibility, team_id, owner_email, "user@example.com", token_teams) is expected
+
+
 # ---------- Register with different auth types ----------
 
 

@@ -4,14 +4,17 @@
 from unittest.mock import AsyncMock, MagicMock
 
 # Third-Party
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi.testclient import TestClient
 import pytest
 
 # First-Party
 from mcpgateway.api.v1 import build_legacy_router, build_v1_router
 from mcpgateway.config import settings
-from mcpgateway.routers.catalog import list_catalog_servers
-from mcpgateway.schemas import CatalogListResponse
+from mcpgateway.db import get_db
+from mcpgateway.middleware.rbac import get_current_user_with_permissions
+from mcpgateway.routers.catalog import list_catalog_servers, router
+from mcpgateway.schemas import CatalogListRequest, CatalogListResponse
 from tests.helpers.router_helpers import collect_routes
 
 
@@ -41,6 +44,17 @@ def _empty_router_kwargs() -> dict[str, APIRouter]:
         "a2a_router",
     ]
     return {name: APIRouter() for name in names}
+
+
+def _catalog_client(*, user_dependency=None, db=None) -> TestClient:
+    """Mount the production catalog router with controlled dependencies."""
+    test_app = FastAPI()
+    test_app.include_router(router, prefix="/v1")
+    if user_dependency is not None:
+        test_app.dependency_overrides[get_current_user_with_permissions] = user_dependency
+    if db is not None:
+        test_app.dependency_overrides[get_db] = lambda: db
+    return TestClient(test_app, raise_server_exceptions=False)
 
 
 @pytest.mark.asyncio
@@ -118,3 +132,129 @@ def test_catalog_router_is_v1_only():
     assert "/v1/catalog/" in v1_paths
     assert "/catalog" not in legacy_paths
     assert "/catalog/" not in legacy_paths
+
+
+def test_catalog_http_unauthenticated_returns_401(monkeypatch):
+    """The mounted route rejects unauthenticated callers."""
+
+    async def reject_authentication():
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    monkeypatch.setattr("mcpgateway.routers.catalog.settings.mcpgateway_catalog_enabled", True, raising=False)
+    response = _catalog_client(user_dependency=reject_authentication, db=MagicMock()).get("/v1/catalog")
+
+    assert response.status_code == 401
+
+
+def test_catalog_http_insufficient_permission_returns_403(monkeypatch):
+    """The mounted route enforces servers.read through the RBAC decorator."""
+    mock_perm_service = MagicMock()
+    mock_perm_service.check_permission = AsyncMock(return_value=False)
+    monkeypatch.setattr("mcpgateway.middleware.rbac.PermissionService", lambda db: mock_perm_service)
+    monkeypatch.setattr("mcpgateway.plugins.get_plugin_manager", AsyncMock(return_value=None))
+
+    async def authenticated_user():
+        return {"email": "viewer@example.com", "db": MagicMock(), "is_admin": False}
+
+    response = _catalog_client(user_dependency=authenticated_user, db=MagicMock()).get("/v1/catalog")
+
+    assert response.status_code == 403
+
+
+def test_catalog_http_disabled_returns_404(monkeypatch, allow_permission):
+    """The mounted route hides the catalog when its feature flag is disabled."""
+    monkeypatch.setattr("mcpgateway.routers.catalog.settings.mcpgateway_catalog_enabled", False, raising=False)
+
+    async def authenticated_user():
+        return {"email": "user@example.com", "db": MagicMock(), "is_admin": False}
+
+    response = _catalog_client(user_dependency=authenticated_user, db=MagicMock()).get("/v1/catalog")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Catalog feature is disabled"}
+
+
+def test_catalog_http_parses_query_parameters(monkeypatch, allow_permission):
+    """FastAPI parses every catalog query parameter and serializes the response model."""
+    monkeypatch.setattr("mcpgateway.routers.catalog.settings.mcpgateway_catalog_enabled", True, raising=False)
+    monkeypatch.setattr("mcpgateway.routers.catalog.get_scoped_resource_access_context", MagicMock(return_value=("user@example.com", ["team-a"])))
+    mock_response = CatalogListResponse(servers=[], total=0, categories=[], auth_types=[], providers=[], all_tags=[])
+    mock_get_catalog = AsyncMock(return_value=mock_response)
+    monkeypatch.setattr("mcpgateway.routers.catalog.catalog_service.get_catalog_servers", mock_get_catalog)
+
+    async def authenticated_user():
+        return {"email": "user@example.com", "db": MagicMock(), "is_admin": False}
+
+    response = _catalog_client(user_dependency=authenticated_user, db=MagicMock()).get(
+        "/v1/catalog",
+        params=[
+            ("category", "Development"),
+            ("auth_type", "OAuth2.1"),
+            ("provider", "IBM"),
+            ("search", "github"),
+            ("tags", "git"),
+            ("tags", "repo"),
+            ("show_registered_only", "true"),
+            ("show_available_only", "false"),
+            ("limit", "25"),
+            ("offset", "50"),
+        ],
+    )
+
+    assert response.status_code == 200
+    assert response.json() == mock_response.model_dump(mode="json")
+    catalog_request = mock_get_catalog.await_args.args[0]
+    assert catalog_request == CatalogListRequest(
+        category="Development",
+        auth_type="OAuth2.1",
+        provider="IBM",
+        search="github",
+        tags=["git", "repo"],
+        show_registered_only=True,
+        show_available_only=False,
+        limit=25,
+        offset=50,
+    )
+
+
+def test_catalog_http_scopes_registration_state_per_caller(monkeypatch, allow_permission):
+    """Two callers cannot share or observe another team's registration state."""
+    fake_catalog = {
+        "catalog_servers": [
+            {
+                "id": "team-server",
+                "name": "Team Server",
+                "url": "http://team-server",
+                "category": "Development",
+                "auth_type": "Open",
+                "provider": "IBM",
+                "tags": [],
+                "description": "Team-scoped server",
+            }
+        ]
+    }
+    db = MagicMock()
+    db.execute.return_value = [("http://team-server", True, None, None, "team", "team-a", "owner@example.com")]
+    mock_cache = AsyncMock()
+    mock_cache.hash_filters = MagicMock(return_value="shared-hash")
+    monkeypatch.setattr("mcpgateway.routers.catalog.settings.mcpgateway_catalog_enabled", True, raising=False)
+    monkeypatch.setattr("mcpgateway.routers.catalog.catalog_service.load_catalog", AsyncMock(return_value=fake_catalog))
+    monkeypatch.setattr("mcpgateway.routers.catalog.catalog_service._get_registry_cache", MagicMock(return_value=mock_cache))
+    monkeypatch.setattr(
+        "mcpgateway.routers.catalog.get_scoped_resource_access_context",
+        lambda request, _user: ("user@example.com", [request.headers["x-test-team"]]),
+    )
+
+    async def authenticated_user():
+        return {"email": "user@example.com", "db": db, "is_admin": False}
+
+    client = _catalog_client(user_dependency=authenticated_user, db=db)
+    visible = client.get("/v1/catalog", headers={"x-test-team": "team-a"})
+    hidden = client.get("/v1/catalog", headers={"x-test-team": "team-b"})
+
+    assert visible.status_code == 200
+    assert hidden.status_code == 200
+    assert visible.json()["servers"][0]["is_registered"] is True
+    assert hidden.json()["servers"][0]["is_registered"] is False
+    mock_cache.get.assert_not_called()
+    mock_cache.set.assert_not_called()
