@@ -633,6 +633,7 @@ async def test_admin_get_update_delete_user():
             password_change_required=None,
             password="newPassword123!",  # pragma: allowlist secret
             admin_origin_source="api",
+            requesting_user_email="admin@example.com",
         )
 
         # ----------> [#2754] Code to be removed after Sun, 16 Aug 2026 23:59:59 UTC
@@ -647,9 +648,10 @@ async def test_admin_get_update_delete_user():
             is_active=None,
             email_verified=None,
             password_change_required=None,
-            password="newPassword123!",  # pragma: allowlist secret
-            admin_origin_source="api",
-        )
+                password="newPassword123!",  # pragma: allowlist secret
+                admin_origin_source="api",
+                requesting_user_email="admin@example.com",
+            )
         assert response_input.headers["deprecation"] == "@1775001599"
         assert response_input.headers["sunset"] == "Sun, 16 Aug 2026 23:59:59 GMT"
         # ----------->
@@ -706,6 +708,7 @@ async def test_admin_update_user_without_full_name_and_is_admin():
             password_change_required=None,
             password=None,
             admin_origin_source="api",
+            requesting_user_email="admin@example.com",
         )
 
 
@@ -870,8 +873,8 @@ async def test_admin_update_last_admin_deactivate_blocked():
 
 
 @pytest.mark.asyncio
-async def test_admin_update_protect_all_admins_blocked():
-    """Test that demoting any admin is blocked when protect_all_admins is enabled."""
+async def test_admin_update_self_demotion_blocked():
+    """Test that API self-demotion returns 400."""
     # First-Party
     from mcpgateway.routers import email_auth
 
@@ -879,7 +882,7 @@ async def test_admin_update_protect_all_admins_blocked():
 
     with patch("mcpgateway.routers.email_auth.EmailAuthService") as MockAuthService:
         auth_service = MockAuthService.return_value
-        auth_service.update_user = AsyncMock(side_effect=ValueError("Admin protection is enabled — cannot demote or deactivate any admin user"))
+        auth_service.update_user = AsyncMock(side_effect=ValueError("Administrators cannot demote or deactivate their own account"))
 
         update_request = AdminUserUpdateRequest(is_admin=False)
 
@@ -887,12 +890,12 @@ async def test_admin_update_protect_all_admins_blocked():
             await email_auth.update_user(
                 "admin@example.com",
                 update_request,
-                current_user_ctx={"db": mock_db, "email": "other-admin@example.com"},
+                current_user_ctx={"db": mock_db, "email": "admin@example.com"},
                 db=mock_db,
             )
 
         assert excinfo.value.status_code == status.HTTP_400_BAD_REQUEST
-        assert "Admin protection is enabled" in str(excinfo.value.detail)
+        assert "cannot demote or deactivate their own account" in str(excinfo.value.detail)
 
 
 # ============================================================================
