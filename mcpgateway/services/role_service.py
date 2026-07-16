@@ -527,7 +527,15 @@ class RoleService:
         return True
 
     async def assign_role_to_user(
-        self, user_email: str, role_id: str, scope: str, scope_id: Optional[str], granted_by: str, expires_at: Optional[datetime] = None, grant_source: Optional[str] = None
+        self,
+        user_email: str,
+        role_id: str,
+        scope: str,
+        scope_id: Optional[str],
+        granted_by: str,
+        expires_at: Optional[datetime] = None,
+        grant_source: Optional[str] = None,
+        commit: bool = True,
     ) -> UserRole:
         """Assign a role to a user.
 
@@ -539,6 +547,7 @@ class RoleService:
             granted_by: Email of user granting the role
             expires_at: Optional expiration datetime
             grant_source: Origin of the grant (e.g., 'sso', 'manual', 'bootstrap', 'auto')
+            commit: Commit immediately. Set false when caller owns transaction.
 
         Returns:
             UserRole: The role assignment
@@ -625,13 +634,16 @@ class RoleService:
         user_role = UserRole(user_email=user_email, role_id=role_id, scope=scope, scope_id=scope_id, granted_by=granted_by, expires_at=expires_at, grant_source=grant_source)
 
         self.db.add(user_role)
-        self.db.commit()
+        if commit:
+            self.db.commit()
+        else:
+            self.db.flush()
         self.db.refresh(user_role)
 
         logger.info("Assigned role %s to %s (scope: %s, scope_id: %s)", role.name, user_email, scope, scope_id)
         return user_role
 
-    async def revoke_role_from_user(self, user_email: str, role_id: str, scope: str, scope_id: Optional[str]) -> bool:
+    async def revoke_role_from_user(self, user_email: str, role_id: str, scope: str, scope_id: Optional[str], commit: bool = True) -> bool:
         """Revoke a role from a user.
 
         Args:
@@ -639,6 +651,7 @@ class RoleService:
             role_id: ID of role to revoke
             scope: Scope of assignment
             scope_id: Team ID if team-scoped
+            commit: Commit immediately. Set false when caller owns transaction.
 
         Returns:
             bool: True if role was revoked, False if not found
@@ -669,7 +682,10 @@ class RoleService:
             return False
 
         user_role.is_active = False
-        self.db.commit()
+        if commit:
+            self.db.commit()
+        else:
+            self.db.flush()
 
         logger.info("Revoked role %s from %s (scope: %s, scope_id: %s)", role_id, user_email, scope, scope_id)
         return True
