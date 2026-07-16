@@ -309,6 +309,7 @@ install-dev: venv
 		echo "⏭️  Rust builds disabled (set ENABLE_RUST_BUILD=1 to enable)"; \
 	fi
 	@$(MAKE) build-ui
+	@./scripts/setup-git-hooks.sh
 
 # help: build-ui              - Build Admin UI CSS and JS bundles (requires npm; set SKIP_UI_BUILD=1 to bypass)
 .PHONY: build-ui
