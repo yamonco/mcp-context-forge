@@ -1636,6 +1636,12 @@ async def call_tool(
     # auth middleware's ContextVars. Materialize the typed identity in the
     # current task from the canonical context recovered above.
     _set_user_identity_from_dict(user_context)
+    logger.warning(
+        "[IDENTITY_CONTEXT_DIAG] has_user=%s typed_identity=%s gateway_selector=%s",
+        bool(user_context.get("email")),
+        user_identity_var.get() is not None,
+        extract_gateway_id_from_headers(request_headers) is not None,
+    )
 
     meta_data = None
     # Extract _meta from request context if available
