@@ -1636,6 +1636,25 @@ async def call_tool(
     # auth middleware's ContextVars. Materialize the typed identity in the
     # current task from the canonical context recovered above.
     _set_user_identity_from_dict(user_context)
+    current_headers: dict[str, Any] = {}
+    has_current_request = False
+    try:
+        current_context = mcp_app.request_context
+        has_current_request = bool(current_context and current_context.request)
+        if has_current_request:
+            current_headers = dict(current_context.request.headers)
+    except LookupError:
+        pass
+    print(  # noqa: T201 - temporary bounded runtime diagnostic; contains booleans only
+        "[IDENTITY_CONTEXT_STDERR] "
+        f"resolved_user={bool(user_context.get('email'))} "
+        f"typed_identity={user_identity_var.get() is not None} "
+        f"resolved_selector={extract_gateway_id_from_headers(request_headers) is not None} "
+        f"current_request={has_current_request} "
+        f"current_auth={bool(get_auth_header_value(current_headers))} "
+        f"current_selector={extract_gateway_id_from_headers(current_headers) is not None}",
+        flush=True,
+    )
 
     meta_data = None
     # Extract _meta from request context if available
