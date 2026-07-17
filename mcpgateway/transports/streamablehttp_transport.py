@@ -1636,25 +1636,6 @@ async def call_tool(
     # auth middleware's ContextVars. Materialize the typed identity in the
     # current task from the canonical context recovered above.
     _set_user_identity_from_dict(user_context)
-    current_headers: dict[str, Any] = {}
-    has_current_request = False
-    try:
-        current_context = mcp_app.request_context
-        has_current_request = bool(current_context and current_context.request)
-        if has_current_request:
-            current_headers = dict(current_context.request.headers)
-    except LookupError:
-        pass
-    print(  # noqa: T201 - temporary bounded runtime diagnostic; contains booleans only
-        "[IDENTITY_CONTEXT_STDERR] "
-        f"resolved_user={bool(user_context.get('email'))} "
-        f"typed_identity={user_identity_var.get() is not None} "
-        f"resolved_selector={extract_gateway_id_from_headers(request_headers) is not None} "
-        f"current_request={has_current_request} "
-        f"current_auth={bool(get_auth_header_value(current_headers))} "
-        f"current_selector={extract_gateway_id_from_headers(current_headers) is not None}",
-        flush=True,
-    )
 
     meta_data = None
     # Extract _meta from request context if available
@@ -2074,7 +2055,15 @@ async def _get_request_context_or_default() -> Tuple[str, dict[str, Any], dict[s
                 session_id = headers.get("x-mcp-session-id") if headers else None
                 resolved_server_id = gw_ctx.get("server_id") or s_id
                 recovered_user_context = gw_ctx.get("user_context", {})
-                if not isinstance(recovered_user_context, dict) or not recovered_user_context.get("email"):
+                current_request_headers = dict(request.headers)
+                has_current_authorization = bool(get_auth_header_value(current_request_headers))
+                if has_current_authorization:
+                    logger.debug(
+                        "[CONTEXT_RESOLUTION] Path 2 skipped (current Authorization present) | "
+                        "server_id=%s | falling through to verified request recovery",
+                        resolved_server_id[:8] if resolved_server_id else None,
+                    )
+                elif not isinstance(recovered_user_context, dict) or not recovered_user_context.get("email"):
                     logger.debug(
                         "[CONTEXT_RESOLUTION] Path 2 skipped (incomplete ASGI context) | "
                         "server_id=%s | has_session_id=%s | falling through to re-authentication",
