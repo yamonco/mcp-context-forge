@@ -1685,21 +1685,9 @@ async def call_tool(
         try:  # Check if this gateway is in direct_proxy mode
             async with get_db() as check_db:
                 gateway = check_db.execute(select(DbGateway).where(DbGateway.id == gateway_id_from_header)).scalar_one_or_none()
-                print(  # noqa: T201 - temporary bounded runtime diagnostic; contains booleans only
-                    "[DIRECT_BRANCH_STDERR] "
-                    f"found={gateway is not None} "
-                    f"mode={bool(gateway and getattr(gateway, 'gateway_mode', 'cache') == 'direct_proxy')} "
-                    f"enabled={settings.mcpgateway_direct_proxy_enabled}",
-                    flush=True,
-                )
                 if gateway and getattr(gateway, "gateway_mode", "cache") == "direct_proxy" and settings.mcpgateway_direct_proxy_enabled:
                     # SECURITY: Check gateway access before allowing direct proxy
-                    gateway_access = await check_gateway_access(check_db, gateway, user_email, token_teams)
-                    print(  # noqa: T201 - temporary bounded runtime diagnostic; contains booleans only
-                        f"[DIRECT_ACCESS_STDERR] allowed={gateway_access}",
-                        flush=True,
-                    )
-                    if not gateway_access:
+                    if not await check_gateway_access(check_db, gateway, user_email, token_teams):
                         logger.warning("Access denied to gateway %s in direct_proxy mode for user %s", gateway_id_from_header, user_email)
                         return types.CallToolResult(content=[types.TextContent(type="text", text=f"Tool not found: {name}")], isError=True)
 

@@ -3720,18 +3720,8 @@ class ToolService(BaseService):
 
             # Inject identity propagation headers
             if user_context:
-                identity_headers = build_identity_headers(user_context, gateway)
-                headers.update(identity_headers)
+                headers.update(build_identity_headers(user_context, gateway))
                 meta_data = build_identity_meta(user_context, meta_data, gateway)
-                print(  # noqa: T201 - temporary bounded runtime diagnostic; contains booleans only
-                    "[IDENTITY_OUTBOUND_STDERR] "
-                    f"built={bool(identity_headers)} "
-                    f"id={bool(identity_headers.get('X-Forwarded-User-Id'))} "
-                    f"email={bool(identity_headers.get('X-Forwarded-User-Email'))} "
-                    f"id_match={identity_headers.get('X-Forwarded-User-Id') == user_context.user_id} "
-                    f"email_match={identity_headers.get('X-Forwarded-User-Email') == user_context.email}",
-                    flush=True,
-                )
 
             gateway_url = gateway.url
 
@@ -3769,12 +3759,6 @@ class ToolService(BaseService):
                 },
             ):
                 traced_headers = inject_trace_context_headers(headers)
-                print(  # noqa: T201 - temporary bounded runtime diagnostic; contains booleans only
-                    "[IDENTITY_TRACED_STDERR] "
-                    f"id={bool(traced_headers.get('X-Forwarded-User-Id'))} "
-                    f"email={bool(traced_headers.get('X-Forwarded-User-Email'))}",
-                    flush=True,
-                )
                 request_meta_data = _sync_meta_traceparent(meta_data, traced_headers)
                 async with streamablehttp_client(url=gateway_url, headers=traced_headers, timeout=settings.mcpgateway_direct_proxy_timeout) as (read_stream, write_stream, _get_session_id):
                     async with ClientSession(read_stream, write_stream) as session:
