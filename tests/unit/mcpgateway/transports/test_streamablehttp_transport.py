@@ -12302,11 +12302,7 @@ async def test_get_request_context_no_request_object(monkeypatch, caplog):
     from unittest.mock import PropertyMock
 
     # First-Party
-    from mcpgateway.transports.streamablehttp_transport import (
-        _get_request_context_or_default,
-        mcp_app,
-        server_id_var,
-    )
+    from mcpgateway.transports.streamablehttp_transport import _get_request_context_or_default, mcp_app, server_id_var
 
     token = server_id_var.set("default_server_id")
 
@@ -12331,11 +12327,7 @@ async def test_get_request_context_stateful_success(monkeypatch):
     from unittest.mock import PropertyMock
 
     # First-Party
-    from mcpgateway.transports.streamablehttp_transport import (
-        _get_request_context_or_default,
-        mcp_app,
-        server_id_var,
-    )
+    from mcpgateway.transports.streamablehttp_transport import _get_request_context_or_default, mcp_app, server_id_var
 
     token = server_id_var.set("default_server_id")
 
