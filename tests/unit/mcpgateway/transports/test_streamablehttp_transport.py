@@ -12302,7 +12302,11 @@ async def test_get_request_context_no_request_object(monkeypatch, caplog):
     from unittest.mock import PropertyMock
 
     # First-Party
-    from mcpgateway.transports.streamablehttp_transport import _get_request_context_or_default, mcp_app, server_id_var
+    from mcpgateway.transports.streamablehttp_transport import (
+        _get_request_context_or_default,
+        mcp_app,
+        server_id_var,
+    )
 
     token = server_id_var.set("default_server_id")
 
@@ -12327,7 +12331,11 @@ async def test_get_request_context_stateful_success(monkeypatch):
     from unittest.mock import PropertyMock
 
     # First-Party
-    from mcpgateway.transports.streamablehttp_transport import _get_request_context_or_default, mcp_app, server_id_var
+    from mcpgateway.transports.streamablehttp_transport import (
+        _get_request_context_or_default,
+        mcp_app,
+        server_id_var,
+    )
 
     token = server_id_var.set("default_server_id")
 
@@ -14716,10 +14724,20 @@ async def test_get_request_context_reads_scope_context(monkeypatch):
     from unittest.mock import PropertyMock
 
     # First-Party
-    from mcpgateway.transports.streamablehttp_transport import _get_request_context_or_default, mcp_app, server_id_var
+    from mcpgateway.transports.streamablehttp_transport import (
+        _get_request_context_or_default,
+        mcp_app,
+        request_headers_var,
+        server_id_var,
+        user_context_var,
+        user_identity_var,
+    )
 
     # Ensure ContextVars are at defaults (simulating SDK task context)
     token = server_id_var.set("default_server_id")
+    original_headers = request_headers_var.get()
+    original_user_context = user_context_var.get()
+    original_user_identity = user_identity_var.get()
 
     injected_user_context = {"email": "pub@example.com", "teams": [], "is_authenticated": True, "is_admin": False}
     injected_headers = {"authorization": "Bearer tok123"}
@@ -14746,8 +14764,15 @@ async def test_get_request_context_reads_scope_context(monkeypatch):
             assert sid == injected_server_id
             assert headers == injected_headers
             assert user == injected_user_context
+            assert server_id_var.get() == injected_server_id
+            assert request_headers_var.get() == injected_headers
+            assert user_context_var.get() == injected_user_context
+            assert user_identity_var.get().email == "pub@example.com"
     finally:
         server_id_var.reset(token)
+        request_headers_var.set(original_headers)
+        user_context_var.set(original_user_context)
+        user_identity_var.set(original_user_identity)
 
 
 @pytest.mark.asyncio
