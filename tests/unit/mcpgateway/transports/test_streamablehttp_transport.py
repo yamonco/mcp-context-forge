@@ -14870,6 +14870,75 @@ async def test_get_request_context_scope_fallback_to_reauth(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_request_context_incomplete_scope_falls_back_to_reauth(monkeypatch):
+    """An ASGI context without a principal must not suppress verified request recovery."""
+    # Standard
+    from unittest.mock import PropertyMock
+
+    # First-Party
+    from mcpgateway.transports.streamablehttp_transport import (
+        _get_request_context_or_default,
+        _MCPGATEWAY_CONTEXT_KEY,
+        mcp_app,
+        server_id_var,
+    )
+
+    token = server_id_var.set("default_server_id")
+    gateway_id = "abc123def456"  # pragma: allowlist secret
+    current_headers = {
+        "authorization": "Bearer current-request-token",  # pragma: allowlist secret
+        "x-context-forge-gateway-id": gateway_id,
+    }
+
+    mock_request = MagicMock()
+    mock_request.scope = {
+        "state": {
+            _MCPGATEWAY_CONTEXT_KEY: {
+                "server_id": "default_server_id",
+                "request_headers": {"x-mcp-session-id": "stale-session"},
+                "user_context": {},
+            }
+        }
+    }
+    mock_request.url.path = "/mcp"
+    mock_request.headers = current_headers
+    mock_request.cookies = {}
+
+    mock_ctx = MagicMock()
+    mock_ctx.request = mock_request
+
+    raw_jwt = {"sub": "agent@example.com", "token_use": "api", "teams": ["team-1"]}
+    normalized = {
+        "email": "agent@example.com",
+        "teams": ["team-1"],
+        "is_admin": False,
+        "is_authenticated": True,
+    }
+    auth = AsyncMock(return_value=raw_jwt)
+    normalize = AsyncMock(return_value=normalized)
+    monkeypatch.setattr(
+        "mcpgateway.transports.streamablehttp_transport.require_auth_header_first",
+        auth,
+    )
+    monkeypatch.setattr(
+        "mcpgateway.transports.streamablehttp_transport._normalize_jwt_payload",
+        normalize,
+    )
+
+    try:
+        with patch.object(type(mcp_app), "request_context", new_callable=PropertyMock, return_value=mock_ctx):
+            sid, headers, user = await _get_request_context_or_default()
+
+            assert sid == "default_server_id"
+            assert headers == current_headers
+            assert user == normalized
+            auth.assert_awaited_once()
+            normalize.assert_awaited_once_with(raw_jwt)
+    finally:
+        server_id_var.reset(token)
+
+
+@pytest.mark.asyncio
 async def test_should_enforce_streamable_rbac_rejects_truthy_non_bool():
     """_should_enforce_streamable_rbac must only trigger on ``True``, not on truthy values.
 

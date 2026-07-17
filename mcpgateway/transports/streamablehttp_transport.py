@@ -1636,12 +1636,6 @@ async def call_tool(
     # auth middleware's ContextVars. Materialize the typed identity in the
     # current task from the canonical context recovered above.
     _set_user_identity_from_dict(user_context)
-    logger.warning(
-        "[IDENTITY_CONTEXT_DIAG] has_user=%s typed_identity=%s gateway_selector=%s",
-        bool(user_context.get("email")),
-        user_identity_var.get() is not None,
-        extract_gateway_id_from_headers(request_headers) is not None,
-    )
 
     meta_data = None
     # Extract _meta from request context if available
@@ -2061,20 +2055,28 @@ async def _get_request_context_or_default() -> Tuple[str, dict[str, Any], dict[s
                 session_id = headers.get("x-mcp-session-id") if headers else None
                 resolved_server_id = gw_ctx.get("server_id") or s_id
                 recovered_user_context = gw_ctx.get("user_context", {})
-                logger.debug(
-                    "[CONTEXT_RESOLUTION] Path 2 (ASGI scope) | server_id=%s | has_session_id=%s",
-                    resolved_server_id[:8] if resolved_server_id else None,
-                    bool(session_id),
-                )
-                # The MCP SDK may run handlers in a task created before the
-                # request ContextVars were populated. Rehydrate them from the
-                # trusted ASGI scope so downstream services and proxy helpers
-                # see the same authenticated identity recovered above.
-                server_id_var.set(resolved_server_id)
-                request_headers_var.set(headers)
-                user_context_var.set(recovered_user_context)
-                _set_user_identity_from_dict(recovered_user_context)
-                return resolved_server_id, headers, recovered_user_context
+                if not isinstance(recovered_user_context, dict) or not recovered_user_context.get("email"):
+                    logger.debug(
+                        "[CONTEXT_RESOLUTION] Path 2 skipped (incomplete ASGI context) | "
+                        "server_id=%s | has_session_id=%s | falling through to re-authentication",
+                        resolved_server_id[:8] if resolved_server_id else None,
+                        bool(session_id),
+                    )
+                else:
+                    logger.debug(
+                        "[CONTEXT_RESOLUTION] Path 2 (ASGI scope) | server_id=%s | has_session_id=%s",
+                        resolved_server_id[:8] if resolved_server_id else None,
+                        bool(session_id),
+                    )
+                    # The MCP SDK may run handlers in a task created before the
+                    # request ContextVars were populated. Rehydrate them from the
+                    # trusted ASGI scope so downstream services and proxy helpers
+                    # see the same authenticated identity recovered above.
+                    server_id_var.set(resolved_server_id)
+                    request_headers_var.set(headers)
+                    user_context_var.set(recovered_user_context)
+                    _set_user_identity_from_dict(recovered_user_context)
+                    return resolved_server_id, headers, recovered_user_context
     except LookupError:
         # Not in a request context — fall through to ContextVar defaults
         return s_id, request_headers_var.get(), user_context_var.get()
