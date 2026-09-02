@@ -260,6 +260,37 @@ psql_query() {
     docker exec "${pg_container}" psql -U postgres -d mcp -Atq -c "${sql}"
 }
 
+assert_postgres_gateway_lifecycle_contract() {
+    local pg_container="$1"
+    local columns
+    local indexes
+
+    columns="$(psql_query "${pg_container}" "
+        SELECT count(*)
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'gateways'
+          AND column_name IN (
+              'status', 'status_message', 'registration_attempts',
+              'next_retry_at', 'last_error', 'lifecycle_claimed_by',
+              'lifecycle_claimed_at', 'lifecycle_claim_expires_at'
+          );
+    ")"
+    indexes="$(psql_query "${pg_container}" "
+        SELECT count(*)
+        FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND tablename = 'gateways'
+          AND indexname IN (
+              'idx_gateways_status_next_retry_at',
+              'idx_gateways_lifecycle_claim'
+          );
+    ")"
+
+    assert_equals "${columns}" "8" "PostgreSQL gateway lifecycle columns"
+    assert_equals "${indexes}" "2" "PostgreSQL gateway lifecycle indexes"
+}
+
 assert_equals() {
     local actual="$1"
     local expected="$2"
@@ -452,9 +483,74 @@ run_postgres_fresh() {
     wait_for_health "http://127.0.0.1:${port}/health" "${gateway_container}"
     versions="$(psql_query "${pg_container}" "SELECT version_num FROM alembic_version ORDER BY version_num")"
     assert_equals "${versions}" "${expected_head}" "PostgreSQL fresh alembic_version"
+    assert_postgres_gateway_lifecycle_contract "${pg_container}"
 
     docker stop "${gateway_container}" >/dev/null
     docker stop "${pg_container}" >/dev/null
+}
+
+run_postgres_gateway_lifecycle_repair() {
+    local expected_head="$1"
+    local network="${NAME_PREFIX}-pg-lifecycle-net"
+    local pg_container="${NAME_PREFIX}-pg-lifecycle-db"
+    local db_url
+    local versions
+
+    log "Running PostgreSQL gateway lifecycle repair check"
+
+    docker network create "${network}" >/dev/null
+    register_network "${network}"
+    docker run -d \
+        --name "${pg_container}" \
+        --network "${network}" \
+        -e "POSTGRES_USER=postgres" \
+        -e "POSTGRES_PASSWORD=upgrade-test-password" \
+        -e "POSTGRES_DB=mcp" \
+        postgres:18 >/dev/null
+    register_container "${pg_container}"
+    wait_for_postgres_ready "${pg_container}"
+
+    db_url="postgresql+psycopg://postgres:upgrade-test-password@${pg_container}:5432/mcp"
+    docker run --rm \
+        --network "${network}" \
+        -e "DATABASE_URL=${db_url}" \
+        --entrypoint /app/.venv/bin/alembic \
+        "${TARGET_IMAGE}" \
+        -c /app/mcpgateway/alembic.ini stamp e198602c3c1e
+
+    psql_query "${pg_container}" "
+        CREATE TABLE gateways (
+            id VARCHAR(36) PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            slug VARCHAR(255) NOT NULL,
+            url VARCHAR(767) NOT NULL
+        );
+    " >/dev/null
+
+    docker run --rm \
+        --network "${network}" \
+        -e "DATABASE_URL=${db_url}" \
+        --entrypoint /app/.venv/bin/alembic \
+        "${TARGET_IMAGE}" \
+        -c /app/mcpgateway/alembic.ini upgrade head
+    assert_postgres_gateway_lifecycle_contract "${pg_container}"
+
+    docker run --rm \
+        --network "${network}" \
+        -e "DATABASE_URL=${db_url}" \
+        --entrypoint /app/.venv/bin/alembic \
+        "${TARGET_IMAGE}" \
+        -c /app/mcpgateway/alembic.ini stamp e198602c3c1e
+    docker run --rm \
+        --network "${network}" \
+        -e "DATABASE_URL=${db_url}" \
+        --entrypoint /app/.venv/bin/alembic \
+        "${TARGET_IMAGE}" \
+        -c /app/mcpgateway/alembic.ini upgrade head
+
+    versions="$(psql_query "${pg_container}" "SELECT version_num FROM alembic_version ORDER BY version_num")"
+    assert_equals "${versions}" "${expected_head}" "PostgreSQL repeated repair alembic_version"
+    assert_postgres_gateway_lifecycle_contract "${pg_container}"
 }
 
 run_postgres_upgrade() {
@@ -532,6 +628,7 @@ run_postgres_upgrade() {
 
     assert_equals "${versions}" "${expected_head}" "PostgreSQL upgrade alembic_version"
     assert_int_ge "${markers}" 1 "PostgreSQL upgrade marker row count"
+    assert_postgres_gateway_lifecycle_contract "${pg_container}"
 
     docker stop "${new_container}" >/dev/null
     docker stop "${pg_container}" >/dev/null
@@ -731,6 +828,12 @@ main() {
 
     expected_head="$(get_expected_head)"
     log "Expected alembic head: ${expected_head}"
+
+    if [[ "${LIFECYCLE_REPAIR_ONLY:-false}" == "true" ]]; then
+        run_postgres_gateway_lifecycle_repair "${expected_head}"
+        log "PostgreSQL gateway lifecycle repair validation passed"
+        return
+    fi
 
     # Detect which PostgreSQL driver the base image ships with.
     # Releases up to ~0.9.x used psycopg2; later releases switched to psycopg (v3).
