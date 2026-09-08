@@ -6655,8 +6655,8 @@ class TestTryOauthAccessTokenErrorBranches:
         assert b"Account disabled" in _response_body(responses)
 
     @pytest.mark.asyncio
-    async def test_teams_resolution_unexpected_exception_rejected(self, _pinned_app_domain, oauth_server_row):
-        """A non-``SQLAlchemyError`` from team resolution falls into the generic 401 handler."""
+    async def test_identity_sync_unexpected_exception_rejected(self, _pinned_app_domain, oauth_server_row):
+        """A non-``SQLAlchemyError`` from native identity sync fails closed."""
         del _pinned_app_domain
         handler, responses = _make_handler()
         mock_user = MagicMock(is_active=True, is_admin=False)
@@ -6668,7 +6668,8 @@ class TestTryOauthAccessTokenErrorBranches:
             _patched_get_db(oauth_server_row),
             patch("mcpgateway.transports.streamablehttp_transport.verify_oauth_access_token", side_effect=fake_verify),
             patch("mcpgateway.auth._get_user_by_email_sync", return_value=mock_user),
-            patch("mcpgateway.auth._resolve_teams_from_db", side_effect=RuntimeError("team lookup exploded")),
+            patch("mcpgateway.transports.streamablehttp_transport.resolve_trusted_provider_by_issuer", return_value=MagicMock(id="keycloak")),
+            patch("mcpgateway.transports.streamablehttp_transport.build_external_identity", AsyncMock(side_effect=RuntimeError("identity sync exploded"))),
         ):
             result = await handler._try_oauth_access_token(_make_idp_token(), self._GOOD_UNVERIFIED)
 
@@ -6690,18 +6691,24 @@ class TestTryOauthAccessTokenErrorBranches:
         async def fake_verify(*_args, **_kwargs):
             return {"sub": "user@example.com", "email": "User@Example.com"}
 
-        async def fake_resolve_teams(*_args, **_kwargs):
-            return ["team-a", "team-b"]
+        provider = MagicMock(id="keycloak")
+        identity = {
+            "email": "user@example.com",
+            "teams": ["team-a", "team-b"],
+            "is_admin": False,
+        }
 
         with (
             _patched_get_db(oauth_server_row),
             patch("mcpgateway.transports.streamablehttp_transport.verify_oauth_access_token", side_effect=fake_verify),
             patch("mcpgateway.auth._get_user_by_email_sync", return_value=mock_user),
-            patch("mcpgateway.auth._resolve_teams_from_db", side_effect=fake_resolve_teams),
+            patch("mcpgateway.transports.streamablehttp_transport.resolve_trusted_provider_by_issuer", return_value=provider),
+            patch("mcpgateway.transports.streamablehttp_transport.build_external_identity", AsyncMock(return_value=identity)) as sync_identity,
         ):
             result = await handler._try_oauth_access_token(_make_idp_token(), self._GOOD_UNVERIFIED)
 
         assert result is OAuthAuthResult.SUCCESS
+        assert sync_identity.await_count == 1
         ctx = user_context_var.get()
         assert ctx["is_authenticated"] is True
         assert ctx["email"] == "user@example.com"  # lowercased

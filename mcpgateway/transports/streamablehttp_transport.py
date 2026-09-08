@@ -5580,10 +5580,9 @@ class _StreamableHttpAuthHandler:
 
         user_email = user_email.strip().lower()
 
-        # Prefer the existing DB identity; only invoke native SSO JIT when it
-        # has not yet been materialized.
+        # Reject disabled identities before native SSO synchronization.
         # First-Party
-        from mcpgateway.auth import _get_user_by_email_sync, _resolve_teams_from_db  # pylint: disable=import-outside-toplevel
+        from mcpgateway.auth import _get_user_by_email_sync  # pylint: disable=import-outside-toplevel
 
         try:
             user_record = await asyncio.to_thread(_get_user_by_email_sync, user_email)
@@ -5596,67 +5595,38 @@ class _StreamableHttpAuthHandler:
             await self._send_error(detail="Authentication failed", headers={"WWW-Authenticate": "Bearer"})
             return OAuthAuthResult.FAILED
 
-        if user_record is None:
-            # Reuse ContextForge's native trusted-IdP JIT path. A standard MCP
-            # OAuth login must not require a second browser SSO round trip just
-            # to materialize the same EmailUser row.
-            try:
-                async with get_db() as db:
-                    provider = resolve_trusted_provider_by_issuer(str(claims.get("iss") or ""), db)
-                    identity = await build_external_identity(provider, claims, token, db) if provider is not None else None
-            except SQLAlchemyError:
-                logger.exception("DB error materializing user during OAuth access-token verification")
-                await self._send_error(detail="Service unavailable", status_code=503)
-                return OAuthAuthResult.FAILED
-            except Exception:
-                logger.exception("Unexpected error materializing user during OAuth access-token verification")
-                await self._send_error(detail="Authentication failed", headers={"WWW-Authenticate": "Bearer"})
-                return OAuthAuthResult.FAILED
-
-            if identity is None:
-                await self._send_error(detail="OAuth identity cannot be materialized")
-                return OAuthAuthResult.FAILED
-
-            user_context_var.set(
-                {
-                    "email": str(identity["email"]),
-                    "teams": identity.get("teams"),
-                    "is_authenticated": True,
-                    "is_admin": bool(identity["is_admin"]),
-                    "permission_is_admin": bool(identity["is_admin"]),
-                    "exp": claims.get("exp"),
-                    "token_use": "session",  # nosec B105 - JWT claim type marker, not a password
-                    "auth_method": "oauth_access_token",
-                }
-            )
-            _oauth_checked_var.set(True)
-            return OAuthAuthResult.SUCCESS
-
-        if not user_record.is_active:
+        if user_record is not None and not user_record.is_active:
             await self._send_error(detail="Account disabled")
             return OAuthAuthResult.FAILED
 
-        # Resolve teams from DB (same path as session tokens).
-        is_admin = bool(user_record.is_admin)
+        # Reuse ContextForge's native trusted-IdP identity path for both new and
+        # existing users. Besides JIT materialization, this synchronizes the
+        # provider's current role/team mappings without a second browser login.
         try:
-            final_teams = None if is_admin else await _resolve_teams_from_db(user_email, user_record)
+            async with get_db() as db:
+                provider = resolve_trusted_provider_by_issuer(str(claims.get("iss") or ""), db)
+                identity = await build_external_identity(provider, claims, token, db) if provider is not None else None
         except SQLAlchemyError:
-            logger.exception("DB error resolving teams for user %s during OAuth access-token verification", user_email)
+            logger.exception("DB error synchronizing user during OAuth access-token verification")
             await self._send_error(detail="Service unavailable", status_code=503)
             return OAuthAuthResult.FAILED
         except Exception:
-            logger.exception("Unexpected error resolving teams for user %s during OAuth access-token verification", user_email)
+            logger.exception("Unexpected error synchronizing user during OAuth access-token verification")
             await self._send_error(detail="Authentication failed", headers={"WWW-Authenticate": "Bearer"})
+            return OAuthAuthResult.FAILED
+
+        if identity is None:
+            await self._send_error(detail="OAuth identity cannot be materialized")
             return OAuthAuthResult.FAILED
 
         # token_use="session" aligns with downstream RBAC gates.
         user_context_var.set(
             {
-                "email": user_email,
-                "teams": final_teams,
+                "email": str(identity["email"]),
+                "teams": identity.get("teams"),
                 "is_authenticated": True,
-                "is_admin": is_admin,
-                "permission_is_admin": is_admin,
+                "is_admin": bool(identity["is_admin"]),
+                "permission_is_admin": bool(identity["is_admin"]),
                 "exp": claims.get("exp"),
                 "token_use": "session",  # nosec B105 - JWT claim type marker, not a password
                 "auth_method": "oauth_access_token",
