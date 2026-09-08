@@ -86,6 +86,7 @@ from mcpgateway.services.oauth_manager import OAuthEnforcementUnavailableError, 
 from mcpgateway.services.permission_service import PermissionService
 from mcpgateway.services.prompt_service import PromptService
 from mcpgateway.services.resource_service import ResourceService
+from mcpgateway.services.sso_service import resolve_trusted_provider_by_issuer
 from mcpgateway.services.tool_service import ToolService
 from mcpgateway.transports.context import UserContext
 from mcpgateway.transports.redis_event_store import RedisEventStore
@@ -98,6 +99,7 @@ from mcpgateway.utils.passthrough_headers import compute_passthrough_headers_cac
 from mcpgateway.utils.trace_context import set_trace_context_from_teams, set_trace_session_id
 from mcpgateway.utils.verify_credentials import (
     _resolve_auth_header_name,
+    build_external_identity,
     get_auth_header_value,
     is_proxy_auth_trust_active,
     require_auth_header_first,
@@ -5570,7 +5572,7 @@ class _StreamableHttpAuthHandler:
         except Exception:
             logger.warning("Failed to persist learned audience for server %s (caller guard)", server_id, exc_info=True)
 
-        # Resolve user identity from verified claims
+        # Resolve user identity from verified claims.
         user_email = claims.get("email") or claims.get("preferred_username") or claims.get("sub")
         if not user_email or not isinstance(user_email, str) or "@" not in user_email:
             await self._send_error(detail="OAuth token missing valid email claim")
@@ -5578,7 +5580,8 @@ class _StreamableHttpAuthHandler:
 
         user_email = user_email.strip().lower()
 
-        # Look up user in ContextForge DB — user must already exist (no auto-creation)
+        # Prefer the existing DB identity; only invoke native SSO JIT when it
+        # has not yet been materialized.
         # First-Party
         from mcpgateway.auth import _get_user_by_email_sync, _resolve_teams_from_db  # pylint: disable=import-outside-toplevel
 
@@ -5594,13 +5597,46 @@ class _StreamableHttpAuthHandler:
             return OAuthAuthResult.FAILED
 
         if user_record is None:
-            await self._send_error(detail="User not registered in ContextForge. Please log in via SSO first.")
-            return OAuthAuthResult.FAILED
+            # Reuse ContextForge's native trusted-IdP JIT path. A standard MCP
+            # OAuth login must not require a second browser SSO round trip just
+            # to materialize the same EmailUser row.
+            try:
+                async with get_db() as db:
+                    provider = resolve_trusted_provider_by_issuer(str(claims.get("iss") or ""), db)
+                    identity = await build_external_identity(provider, claims, token, db) if provider is not None else None
+            except SQLAlchemyError:
+                logger.exception("DB error materializing user during OAuth access-token verification")
+                await self._send_error(detail="Service unavailable", status_code=503)
+                return OAuthAuthResult.FAILED
+            except Exception:
+                logger.exception("Unexpected error materializing user during OAuth access-token verification")
+                await self._send_error(detail="Authentication failed", headers={"WWW-Authenticate": "Bearer"})
+                return OAuthAuthResult.FAILED
+
+            if identity is None:
+                await self._send_error(detail="OAuth identity cannot be materialized")
+                return OAuthAuthResult.FAILED
+
+            user_context_var.set(
+                {
+                    "email": str(identity["email"]),
+                    "teams": identity.get("teams"),
+                    "is_authenticated": True,
+                    "is_admin": bool(identity["is_admin"]),
+                    "permission_is_admin": bool(identity["is_admin"]),
+                    "exp": claims.get("exp"),
+                    "token_use": "session",  # nosec B105 - JWT claim type marker, not a password
+                    "auth_method": "oauth_access_token",
+                }
+            )
+            _oauth_checked_var.set(True)
+            return OAuthAuthResult.SUCCESS
+
         if not user_record.is_active:
             await self._send_error(detail="Account disabled")
             return OAuthAuthResult.FAILED
 
-        # Resolve teams from DB (same path as session tokens)
+        # Resolve teams from DB (same path as session tokens).
         is_admin = bool(user_record.is_admin)
         try:
             final_teams = None if is_admin else await _resolve_teams_from_db(user_email, user_record)
@@ -5613,9 +5649,7 @@ class _StreamableHttpAuthHandler:
             await self._send_error(detail="Authentication failed", headers={"WWW-Authenticate": "Bearer"})
             return OAuthAuthResult.FAILED
 
-        # token_use="session" aligns with downstream RBAC gates (main.py, rbac.py,
-        # token_scoping.py) that treat DB-resolved teams as the session semantic.
-        # auth_method distinguishes the origin for audit/logging.
+        # token_use="session" aligns with downstream RBAC gates.
         user_context_var.set(
             {
                 "email": user_email,

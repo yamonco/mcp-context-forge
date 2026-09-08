@@ -6597,23 +6597,42 @@ class TestTryOauthAccessTokenErrorBranches:
         assert b"missing valid email claim" in _response_body(responses)
 
     @pytest.mark.asyncio
-    async def test_user_not_registered_rejected(self, _pinned_app_domain, oauth_server_row):
-        """A verified token for a user absent from the ContextForge DB is rejected."""
+    async def test_user_not_registered_is_materialized_via_native_sso_path(self, _pinned_app_domain, oauth_server_row):
+        """A verified trusted-IdP token JIT-creates the same identity as browser SSO."""
         del _pinned_app_domain
-        handler, responses = _make_handler()
+        # First-Party
+        from mcpgateway.transports.streamablehttp_transport import user_context_var  # pylint: disable=import-outside-toplevel
+
+        handler, _responses = _make_handler()
+        provider = MagicMock(id="keycloak")
+        identity = {
+            "email": "user@example.com",
+            "teams": ["personal-user"],
+            "is_admin": False,
+        }
 
         async def fake_verify(*_args, **_kwargs):
-            return {"sub": "user@example.com", "email": "user@example.com"}
+            return {"iss": IDP_ISSUER, "sub": "subject-uuid", "email": "user@example.com", "exp": 1234567890}
 
         with (
             _patched_get_db(oauth_server_row),
             patch("mcpgateway.transports.streamablehttp_transport.verify_oauth_access_token", side_effect=fake_verify),
             patch("mcpgateway.auth._get_user_by_email_sync", return_value=None),
+            patch("mcpgateway.transports.streamablehttp_transport.resolve_trusted_provider_by_issuer", return_value=provider) as resolve_provider,
+            patch("mcpgateway.transports.streamablehttp_transport.build_external_identity", AsyncMock(return_value=identity)) as materialize,
         ):
             result = await handler._try_oauth_access_token(_make_idp_token(), self._GOOD_UNVERIFIED)
 
-        assert result is OAuthAuthResult.FAILED
-        assert b"not registered in ContextForge" in _response_body(responses)
+        assert result is OAuthAuthResult.SUCCESS
+        assert resolve_provider.call_count == 1
+        assert resolve_provider.call_args.args[0] == IDP_ISSUER
+        assert materialize.await_count == 1
+        assert materialize.await_args.args[0] is provider
+        assert materialize.await_args.args[1] == await fake_verify()
+        context = user_context_var.get()
+        assert context["email"] == "user@example.com"
+        assert context["teams"] == ["personal-user"]
+        assert context["auth_method"] == "oauth_access_token"
 
     @pytest.mark.asyncio
     async def test_inactive_user_rejected(self, _pinned_app_domain, oauth_server_row):
