@@ -856,6 +856,29 @@ async def test_call_tool_no_content(monkeypatch, caplog):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("structured", [{"result": []}, {}])
+async def test_call_tool_preserves_structured_only_result(monkeypatch, structured):
+    """Structured output remains valid when no text content is present."""
+    # First-Party
+    from mcpgateway.common.models import ToolResult
+    from mcpgateway.transports.streamablehttp_transport import call_tool, tool_service
+
+    mock_db = MagicMock()
+    mock_result = ToolResult(content=[], structured_content=structured)
+
+    @asynccontextmanager
+    async def fake_get_db():
+        yield mock_db
+
+    monkeypatch.setattr("mcpgateway.transports.streamablehttp_transport.get_db", fake_get_db)
+    monkeypatch.setattr(tool_service, "invoke_tool", AsyncMock(return_value=mock_result))
+
+    result = await call_tool("mytool", {"foo": "bar"})
+
+    assert result == ([], structured)
+
+
+@pytest.mark.asyncio
 async def test_call_tool_exception(monkeypatch, caplog):
     """Test call_tool re-raises exception after logging for proper MCP SDK error handling."""
     # First-Party
