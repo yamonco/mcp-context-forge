@@ -1920,7 +1920,30 @@ async def call_tool(
                 meta_data=meta_data,
                 require_model_visible=True,
             )
-            if not result or not result.content:
+            if not result:
+                logger.warning("No content returned by tool: %s", name)
+                return []
+
+            # Extract structured content before the empty-content guard so a
+            # valid structured-only result is not discarded.  Keep extraction
+            # defensive because third-party result objects may expose a
+            # property that raises while being read.
+            try:
+                structured = getattr(result, "structured_content", None)
+            except Exception:
+                structured = None
+
+            if not isinstance(structured, dict):
+                try:
+                    dump = result.model_dump(by_alias=True) if hasattr(result, "model_dump") else {}
+                    structured = dump.get("structuredContent") if isinstance(dump, dict) else None
+                except Exception:
+                    structured = None
+
+            if not isinstance(structured, dict):
+                structured = None
+
+            if not result.content and not isinstance(structured, dict):
                 logger.warning("No content returned by tool: %s", name)
                 return []
 
@@ -2011,30 +2034,6 @@ async def call_tool(
                     # Unknown content type - convert to text representation
                     unstructured.append(types.TextContent(type="text", text=orjson.dumps(content.model_dump(by_alias=True, mode="json")).decode()))
 
-            # If the tool produced structured content (ToolResult.structured_content / structuredContent),
-            # return a combination (unstructured, structured) so the server can validate against outputSchema.
-            # The ToolService may populate structured_content (snake_case) or the model may expose
-            # an alias 'structuredContent' when dumped via model_dump(by_alias=True).
-            structured = None
-            try:
-                # Prefer attribute if present
-                structured = getattr(result, "structured_content", None)
-            except Exception:
-                structured = None
-
-            # Fallback to by-alias dump (in case the result is a pydantic model with alias fields)
-            if not isinstance(structured, dict):
-                try:
-                    dump = result.model_dump(by_alias=True) if hasattr(result, "model_dump") else {}
-                    structured = dump.get("structuredContent") if isinstance(dump, dict) else None
-                except Exception:
-                    structured = None
-
-            # MCP CallToolResult.structuredContent accepts dict or None only;
-            # reject anything else (e.g. stray MagicMocks in tests, bad shapes).
-            if not isinstance(structured, dict):
-                structured = None
-
             is_error = _truthy_is_error(result)
 
             if is_error:
@@ -2054,7 +2053,7 @@ async def call_tool(
             # Success path: return the list/tuple shape so the MCP SDK's
             # server-side validator runs and enforces the tool's
             # outputSchema against the structured payload.
-            if structured:
+            if structured is not None:
                 return (unstructured, structured)
             return unstructured
     except Exception as e:
