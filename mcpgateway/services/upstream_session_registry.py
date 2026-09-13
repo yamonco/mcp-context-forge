@@ -36,7 +36,7 @@ import anyio
 import httpx
 from mcp import ClientSession, McpError
 from mcp.client.sse import sse_client
-from mcp.client.streamable_http import streamable_http_client as streamablehttp_client
+from mcpgateway.utils.streamable_http_client import streamable_http_client as streamablehttp_client
 from mcp.shared.session import RequestResponder
 import mcp.types as mcp_types
 
