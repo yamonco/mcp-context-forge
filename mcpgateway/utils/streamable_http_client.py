@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Compatibility wrapper for the MCP Streamable HTTP client.
+"""Location: ./mcpgateway/utils/streamable_http_client.py
+Copyright contributors to the MCP-CONTEXT-FORGE project
+SPDX-License-Identifier: Apache-2.0
+
+Compatibility wrapper for the MCP Streamable HTTP client.
 
 MCP 1.29 moved HTTP configuration onto an explicit ``httpx.AsyncClient``.
 ContextForge still has call sites that supply the earlier ``headers``,

@@ -1,4 +1,10 @@
-"""Tests for the MCP 1.29 Streamable HTTP compatibility wrapper."""
+# -*- coding: utf-8 -*-
+"""Location: ./tests/unit/mcpgateway/utils/test_streamable_http_client.py
+Copyright contributors to the MCP-CONTEXT-FORGE project
+SPDX-License-Identifier: Apache-2.0
+
+Tests for the MCP 1.29 Streamable HTTP compatibility wrapper.
+"""
 
 from contextlib import asynccontextmanager
 
