@@ -5,16 +5,12 @@
 # This workflow builds container images for multiple architectures:
 #   - linux/amd64  (native on ubuntu-24.04)        - PR (build only), merge queue (build only), push
 #   - linux/arm64  (native on ubuntu-24.04-arm)     - merge queue (build only), push
-#   - linux/s390x  (native on ubuntu-24.04-s390x)   - push and workflow_dispatch only (NOT merge queue)
-#   - linux/ppc64le (native on ubuntu-24.04-ppc64le) - push and workflow_dispatch only (NOT merge queue)
 #
-# s390x and ppc64le are excluded from the merge queue to avoid stalling it while
-# waiting for scarce native runner pools. A per-entry gate step skips their build
-# steps when the event is merge_group. They still build and push on every push to
-# main and on workflow_dispatch, so the multiplatform manifest is always complete.
+# The YAMON fork publishes the architectures available on standard GitHub-hosted
+# runners. IBM's s390x/ppc64le runners are not attached to this repository.
 #
 # Pipeline:
-#   1. Build platform images in parallel (amd64+arm64 on merge queue; all arches on push)
+#   1. Build amd64 and arm64 images in parallel
 #   2. Create multiplatform manifest (push and tags only)
 #   3. Sign and attest with Cosign (keyless OIDC, push and tags only)
 #
@@ -129,111 +125,13 @@ jobs:
           printf 'Docker build input changed: %s\n' "${docker_input_changes[@]}"
 
   # ---------------------------------------------------------------
-  # Build the full dependency-closure wheel image for s390x and ppc64le only.
-  # amd64/arm64 have full PyPI manylinux coverage and do not need a wheel
-  # closure — Containerfile always resolves via PyPI for those arches.
-  # s390x/ppc64le wheels are content-addressed by sha256(uv.lock) and the
-  # build is idempotent (skipped when the lock-hash tag already exists).
-  # Rides the same non-PR, non-merge-group events as the platform builds below
-  # (push/workflow_dispatch). Excluded from merge_group to avoid acquiring
-  # s390x/ppc64le runners in the merge queue critical path.
-  # ---------------------------------------------------------------
-  wheels:
-    if: >-
-      github.event_name != 'pull_request' &&
-      github.event_name != 'merge_group' &&
-      needs.docker-inputs.outputs.changed == 'true'
-    needs: docker-inputs
-    name: Build wheels (${{ matrix.suffix }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # s390x temporarily disabled on push due to runner capacity issues.
-          # Re-enable by uncommenting the entry below once runners are stable.
-          # - platform: linux/s390x
-          #   runner: ubuntu-24.04-s390x
-          #   suffix: s390x
-          - platform: linux/ppc64le
-            runner: ubuntu-24.04-ppc64le
-            suffix: ppc64le
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 120
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
-        with:
-          persist-credentials: false
-
-      - name: Compute image ref
-        id: ref
-        run: |
-          WHEELS_IMAGE_LC=$(echo "${{ env.IMAGE_NAME }}-wheels" | tr '[:upper:]' '[:lower:]')
-          LOCK_HASH=$(sha256sum uv.lock | cut -c1-16)
-          echo "image=${{ env.REGISTRY }}/${WHEELS_IMAGE_LC}:${{ matrix.suffix }}-${LOCK_HASH}" >> "${GITHUB_OUTPUT}"
-          echo "latest=${{ env.REGISTRY }}/${WHEELS_IMAGE_LC}:${{ matrix.suffix }}-latest" >> "${GITHUB_OUTPUT}"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-        with:
-          version: latest
-
-      - name: Log in to GHCR
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Check for existing wheel image
-        id: check
-        run: |
-          if docker manifest inspect "${{ steps.ref.outputs.image }}" >/dev/null 2>&1; then
-            echo "Wheel image ${{ steps.ref.outputs.image }} already exists, skipping build"
-            echo "exists=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "exists=false" >> "${GITHUB_OUTPUT}"
-          fi
-
-      # Push both the lock-hash tag (exact reproducible reference) and a
-      # `latest` tag per arch (fallback for local builds and for `build`
-      # below when the lock-hash image isn't published yet).
-      - name: Build and push wheel image
-        if: steps.check.outputs.exists != 'true'
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: .
-          file: infra/wheels/Containerfile
-          platforms: ${{ matrix.platform }}
-          push: true
-          tags: |
-            ${{ steps.ref.outputs.image }}
-            ${{ steps.ref.outputs.latest }}
-          cache-from: type=gha,scope=wheels-${{ matrix.suffix }}
-          cache-to: type=gha,mode=max,scope=wheels-${{ matrix.suffix }}
-
-  # ---------------------------------------------------------------
   # Build each platform in parallel
   # ---------------------------------------------------------------
   build:
-    # Waits on `wheels`: s390x/ppc64le have no live-PyPI fallback (psycopg-binary
-    # has no s390x wheels, tiktoken needs a Rust compiler the builder stage lacks
-    # to build from sdist on ppc64le), so the matching wheel image must exist
-    # before building against it. `wheels` skips the rebuild via `docker manifest
-    # inspect` when the lock hash is unchanged, so the wait is ~2-3 min in steady
-    # state; only a real dependency change pays the full build time. `always() &&
-    # needs.wheels.result != 'failure'` tolerates `wheels` being skipped entirely
-    # on PR events and merge groups with no Docker build input changes.
     if: >-
-      always() &&
       needs.docker-inputs.outputs.changed == 'true' &&
-      needs.wheels.result != 'failure' &&
       (github.event_name != 'pull_request' || !github.event.pull_request.draft)
-    needs: [docker-inputs, wheels]
+    needs: docker-inputs
     name: Build ${{ matrix.suffix }}
     strategy:
       fail-fast: false
@@ -246,6 +144,7 @@ jobs:
             qemu: false
             build_on_pr: true
             build_on_merge_group: true
+            build_on_push: true
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
             suffix: arm64
@@ -253,25 +152,9 @@ jobs:
             qemu: false
             build_on_pr: false
             build_on_merge_group: true
-          - platform: linux/s390x
-            runner: ubuntu-24.04-s390x
-            suffix: s390x
-            cache_mode: max
-            qemu: false
-            build_on_pr: false
-            build_on_merge_group: false   # not merge queue
-            build_on_push: false          # temporarily disabled — s390x runner capacity issues
-          - platform: linux/ppc64le
-            runner: ubuntu-24.04-ppc64le
-            suffix: ppc64le
-            cache_mode: max
-            qemu: false
-            build_on_pr: false
-            build_on_merge_group: false   # push and workflow_dispatch only — not merge queue
+            build_on_push: true
 
-    # Use a cheap ubuntu-24.04 runner when this matrix entry's gate would skip all
-    # work steps anyway (merge_group, PR, or push with the corresponding flag=false).
-    # This avoids acquiring scarce s390x/ppc64le native runner slots for no-op jobs.
+    # Use a cheap runner when an architecture is intentionally skipped for an event.
     runs-on: ${{ (github.event_name == 'merge_group' && matrix.build_on_merge_group != true || github.event_name == 'pull_request' && matrix.build_on_pr != true || github.event_name == 'push' && matrix.build_on_push == false) && 'ubuntu-24.04' || matrix.runner }}
     timeout-minutes: 60
     permissions:
@@ -280,7 +163,6 @@ jobs:
 
     # amd64: cache-only on PR and merge queue; full build+push on push
     # arm64: cache-only on merge queue; full build+push on push
-    # s390x/ppc64le: all steps skipped on PR and merge queue; full build+push on push
     #
     # The `gate` step evaluates build_on_pr and build_on_merge_group for this
     # matrix entry and sets outputs.build = 'true'/'false'. All subsequent steps
@@ -341,36 +223,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Resolve WHEELS_REF for the build:
-      # - amd64/arm64: always use UBI_MINIMAL (full PyPI manylinux coverage,
-      #   no wheel closure needed; avoids stale GHCR images)
-      # - s390x/ppc64le: prefer the lock-hash-tagged wheel image built by the
-      #   `wheels` job above; fall back to `latest` if the lock-hash tag isn't
-      #   published yet; fall back to UBI_MINIMAL if neither exists (first-ever
-      #   run before any wheel image has been published for this arch).
+      # amd64/arm64 have complete PyPI manylinux coverage, so use the base image
+      # directly rather than a repository-specific wheel closure.
       - name: Compute wheel image ref
         if: steps.gate.outputs.build == 'true'
         run: |
           UBI_MINIMAL_DEFAULT=$(grep -m1 '^ARG UBI_MINIMAL=' Containerfile | cut -d= -f2-)
-          if [[ "${{ matrix.suffix }}" == "s390x" || "${{ matrix.suffix }}" == "ppc64le" ]]; then
-            WHEELS_IMAGE_LC=$(echo "${{ env.IMAGE_NAME }}-wheels" | tr '[:upper:]' '[:lower:]')
-            LOCK_HASH=$(sha256sum uv.lock | cut -c1-16)
-            LOCK_TAG="${{ env.REGISTRY }}/${WHEELS_IMAGE_LC}:${{ matrix.suffix }}-${LOCK_HASH}"
-            LATEST_TAG="${{ env.REGISTRY }}/${WHEELS_IMAGE_LC}:${{ matrix.suffix }}-latest"
-            if docker manifest inspect "${LOCK_TAG}" >/dev/null 2>&1; then
-              echo "Using lock-matched wheel image: ${LOCK_TAG}"
-              echo "WHEELS_REF=${LOCK_TAG}" >> "${GITHUB_ENV}"
-            elif docker manifest inspect "${LATEST_TAG}" >/dev/null 2>&1; then
-              echo "Lock-matched wheel image not published yet; falling back to ${LATEST_TAG}"
-              echo "WHEELS_REF=${LATEST_TAG}" >> "${GITHUB_ENV}"
-            else
-              echo "No wheel image available yet for ${{ matrix.suffix }}; falling back to ${UBI_MINIMAL_DEFAULT}"
-              echo "WHEELS_REF=${UBI_MINIMAL_DEFAULT}" >> "${GITHUB_ENV}"
-            fi
-          else
-            echo "${{ matrix.suffix }}: using UBI_MINIMAL as WHEELS_REF (PyPI install, no wheel closure needed)"
-            echo "WHEELS_REF=${UBI_MINIMAL_DEFAULT}" >> "${GITHUB_ENV}"
-          fi
+          echo "${{ matrix.suffix }}: using UBI_MINIMAL as WHEELS_REF"
+          echo "WHEELS_REF=${UBI_MINIMAL_DEFAULT}" >> "${GITHUB_ENV}"
 
       - name: Extract metadata
         if: steps.gate.outputs.build == 'true'
@@ -462,12 +322,9 @@ jobs:
 
           echo "Creating multiplatform manifest..."
 
-          # s390x temporarily excluded from the manifest due to runner capacity issues.
-          # Re-add "${IMAGE}:s390x-${SHA}" once s390x builds are re-enabled.
           IMAGES=(
             "${IMAGE}:amd64-${SHA}"
             "${IMAGE}:arm64-${SHA}"
-            "${IMAGE}:ppc64le-${SHA}"
           )
 
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
@@ -568,7 +425,7 @@ jobs:
   # ---------------------------------------------------------------
   build-complete:
     name: Docker Build Complete
-    needs: [docker-inputs, wheels, build]
+    needs: [docker-inputs, build]
     runs-on: ubuntu-24.04
     if: always()
     steps:
@@ -584,12 +441,6 @@ jobs:
           if [[ "$changed" != "true" ]]; then
             echo "Docker build skipped — no relevant files changed in this merge group"
             exit 0
-          fi
-
-          wheels_result="${{ needs.wheels.result }}"
-          if [[ "$wheels_result" == "failure" || "$wheels_result" == "cancelled" ]]; then
-            echo "Docker wheel builds failed (result: $wheels_result)"
-            exit 1
           fi
 
           result="${{ needs.build.result }}"
