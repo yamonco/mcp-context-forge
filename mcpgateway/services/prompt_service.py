@@ -29,7 +29,6 @@ from jinja2.exceptions import SecurityError as JinjaSecurityError
 from jinja2.sandbox import SandboxedEnvironment
 from mcp import ClientSession, types
 from mcp.client.sse import sse_client
-from mcpgateway.utils.streamable_http_client import streamable_http_client as streamablehttp_client
 from mcp.types import GetPromptRequest, GetPromptRequestParams
 import orjson
 from pydantic import ValidationError
@@ -38,6 +37,7 @@ from sqlalchemy.exc import IntegrityError, MultipleResultsFound, OperationalErro
 from sqlalchemy.orm import joinedload, selectinload, Session
 
 # First-Party
+from mcpgateway.utils.streamable_http_client import streamable_http_client as streamablehttp_client
 from mcpgateway.common.models import Message, PromptResult, Role, TextContent
 from mcpgateway.common.validators import validate_meta_data as _validate_meta_data
 from mcpgateway.config import settings

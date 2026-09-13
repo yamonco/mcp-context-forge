@@ -50,7 +50,6 @@ import jsonschema
 from jsonschema import Draft4Validator, Draft6Validator, Draft7Validator, validators
 from mcp import ClientSession, types
 from mcp.client.sse import sse_client
-from mcpgateway.utils.streamable_http_client import streamable_http_client as streamablehttp_client
 import orjson
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import and_, delete, desc, or_, select
@@ -58,6 +57,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import joinedload, selectinload, Session
 
 # First-Party
+from mcpgateway.utils.streamable_http_client import streamable_http_client as streamablehttp_client
 from mcpgateway.cache.global_config_cache import global_config_cache
 from mcpgateway.common.models import Gateway as PydanticGateway
 from mcpgateway.common.models import TextContent

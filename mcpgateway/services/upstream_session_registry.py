@@ -36,11 +36,11 @@ import anyio
 import httpx
 from mcp import ClientSession, McpError
 from mcp.client.sse import sse_client
-from mcpgateway.utils.streamable_http_client import streamable_http_client as streamablehttp_client
 from mcp.shared.session import RequestResponder
 import mcp.types as mcp_types
 
 # First-Party
+from mcpgateway.utils.streamable_http_client import streamable_http_client as streamablehttp_client
 from mcpgateway.transports.context import request_headers_var
 from mcpgateway.utils.url_auth import sanitize_url_for_logging
 
