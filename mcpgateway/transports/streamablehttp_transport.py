@@ -49,7 +49,6 @@ from fastapi.security.utils import get_authorization_scheme_param
 import httpx
 import jwt
 from mcp import ClientSession, types
-from mcp.client.streamable_http import streamablehttp_client
 from mcp.server.lowlevel import Server
 from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.server.streamable_http import EventCallback, EventId, EventMessage, EventStore, StreamId
@@ -64,6 +63,7 @@ from starlette.status import HTTP_200_OK, HTTP_401_UNAUTHORIZED, HTTP_403_FORBID
 from starlette.types import Receive, Scope, Send
 
 # First-Party
+from mcpgateway.utils.streamable_http_client import streamable_http_client as streamablehttp_client
 from mcpgateway.cache.global_config_cache import global_config_cache
 from mcpgateway.common.models import LogLevel
 from mcpgateway.common.validators import validate_meta_data as _validate_meta_data

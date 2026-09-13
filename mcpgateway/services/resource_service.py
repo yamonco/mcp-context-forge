@@ -37,7 +37,6 @@ import uuid
 import httpx
 from mcp import ClientSession, types
 from mcp.client.sse import sse_client
-from mcp.client.streamable_http import streamablehttp_client
 from mcp.types import ReadResourceRequest, ReadResourceRequestParams
 import parse
 from pydantic import ValidationError
@@ -46,6 +45,7 @@ from sqlalchemy.exc import IntegrityError, MultipleResultsFound, OperationalErro
 from sqlalchemy.orm import joinedload, selectinload, Session
 
 # First-Party
+from mcpgateway.utils.streamable_http_client import streamable_http_client as streamablehttp_client
 from mcpgateway.common.models import ResourceContent, ResourceContents, ResourceTemplate, TextContent
 from mcpgateway.common.validators import SecurityValidator
 from mcpgateway.common.validators import validate_meta_data as _validate_meta_data
