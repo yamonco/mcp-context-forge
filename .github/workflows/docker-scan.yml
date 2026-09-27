@@ -28,7 +28,7 @@ name: Docker Security Scan
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review]
-    branches: ["main"]
+    branches: ["main", "release/v1.0.7-ibm-4092d336"]
     paths:
       - 'Containerfile'
       - 'infra/nginx/**'
