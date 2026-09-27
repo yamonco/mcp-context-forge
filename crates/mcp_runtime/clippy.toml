@@ -1,2 +1,6 @@
 too-many-lines-threshold = 1000
 max-struct-bools = 10
+# HTTP rejection responses carry status, headers, and body as the error value.
+# Keep this transport type owned at the boundary instead of boxing every
+# rejection path solely to satisfy the generic Result size heuristic.
+large-error-ignored = ["http::response::Response"]
