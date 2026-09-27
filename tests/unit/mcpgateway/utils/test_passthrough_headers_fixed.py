@@ -537,3 +537,40 @@ class TestComputePassthroughHeadersCached:
             gateway_passthrough_headers=["X-Gateway"],
         )
         assert result == {"X-Gateway": "gw"}
+
+    @patch("mcpgateway.utils.passthrough_headers.settings")
+    def test_user_oauth_preserves_stored_bearer_and_allowed_actor_proof(self, mock_settings):
+        """A caller may forward a signed actor proof but cannot choose the OAuth bearer."""
+        mock_settings.enable_header_passthrough = True
+        mock_settings.enable_overwrite_base_headers = True
+
+        result = compute_passthrough_headers_cached(
+            request_headers={
+                "X-Upstream-Authorization": "Bearer attacker",
+                "Authorization": "Bearer attacker",
+                "X-Yam-Actor-Proof": "signed-proof",
+            },
+            base_headers={"Authorization": "Bearer stored-user"},
+            allowed_headers=["Authorization", "X-Upstream-Authorization", "X-Yam-Actor-Proof"],
+            gateway_auth_type="oauth",
+            gateway_passthrough_headers=["Authorization", "X-Upstream-Authorization", "X-Yam-Actor-Proof"],
+            is_user_oauth=True,
+        )
+
+        assert result == {"Authorization": "Bearer stored-user", "X-Yam-Actor-Proof": "signed-proof"}
+
+    @patch("mcpgateway.utils.passthrough_headers.settings")
+    def test_user_oauth_missing_consent_cannot_use_inbound_bearer(self, mock_settings):
+        """An inbound bearer never substitutes for absent per-user authorization."""
+        mock_settings.enable_header_passthrough = True
+        mock_settings.enable_overwrite_base_headers = True
+
+        result = compute_passthrough_headers_cached(
+            request_headers={"X-Upstream-Authorization": "Bearer attacker", "Authorization": "Bearer attacker"},
+            base_headers={},
+            allowed_headers=["Authorization"],
+            gateway_auth_type="oauth",
+            is_user_oauth=True,
+        )
+
+        assert result == {}

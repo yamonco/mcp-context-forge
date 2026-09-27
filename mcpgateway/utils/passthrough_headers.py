@@ -353,6 +353,7 @@ def compute_passthrough_headers_cached(
     gateway_auth_type: Optional[str] = None,
     gateway_passthrough_headers: Optional[List[str]] = None,
     is_token_exchange: bool = False,
+    is_user_oauth: bool = False,
 ) -> Dict[str, str]:
     """Compute passthrough headers without database query.
 
@@ -372,6 +373,8 @@ def compute_passthrough_headers_cached(
             token-exchange resolver. Blocks the X-Upstream-Authorization rename and the
             auth_type="none" client-Authorization passthrough from overwriting it, since
             either would let a caller replace the exchanged token with an arbitrary one.
+        is_user_oauth: True for an authorization-code gateway. Inbound headers must
+            not replace the stored user's OAuth token or satisfy missing OAuth consent.
 
     Returns:
         Combined dictionary of base headers plus allowed passthrough headers.
@@ -397,7 +400,7 @@ def compute_passthrough_headers_cached(
     request_headers_lower = {k.lower(): v for k, v in request_headers.items()} if request_headers else {}
     upstream_auth = request_headers_lower.get("x-upstream-authorization")
 
-    if upstream_auth and not is_token_exchange:
+    if upstream_auth and not (is_token_exchange or is_user_oauth):
         try:
             sanitized_value = sanitize_header_value(upstream_auth)
             if sanitized_value:
@@ -405,7 +408,7 @@ def compute_passthrough_headers_cached(
                 logger.debug("Renamed X-Upstream-Authorization to Authorization for upstream passthrough")
         except Exception as e:
             logger.warning(f"Failed to sanitize X-Upstream-Authorization header: {e}")
-    elif gateway_auth_type == "none" and not is_token_exchange:
+    elif gateway_auth_type == "none" and not (is_token_exchange or is_user_oauth):
         # When gateway has no auth, pass through client's Authorization if present
         client_auth = request_headers_lower.get("authorization")
         if client_auth and "authorization" not in [h.lower() for h in base_headers.keys()]:
@@ -437,6 +440,10 @@ def compute_passthrough_headers_cached(
                 continue
 
             header_lower = header_name.lower()
+
+            if is_user_oauth and header_lower in {"authorization", "x-upstream-authorization"}:
+                logger.warning("Refusing inbound authorization passthrough for user OAuth gateway")
+                continue
 
             # Block protocol-level headers from inbound passthrough
             if header_lower in _INBOUND_PASSTHROUGH_DENYLIST:
