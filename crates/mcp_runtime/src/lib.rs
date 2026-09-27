@@ -659,7 +659,7 @@ enum ResolveToolsCallError {
     Fallback(String),
     JsonRpcError {
         payload: Value,
-        headers: reqwest::header::HeaderMap,
+        headers: Box<reqwest::header::HeaderMap>,
     },
 }
 
@@ -8521,7 +8521,10 @@ async fn resolve_tools_call_plan_via_backend(
             && payload.get("jsonrpc") == Some(&Value::String(JSONRPC_VERSION.to_string()))
             && payload.get("error").is_some()
         {
-            return Err(ResolveToolsCallError::JsonRpcError { payload, headers });
+            return Err(ResolveToolsCallError::JsonRpcError {
+                payload,
+                headers: Box::new(headers),
+            });
         }
         return Err(ResolveToolsCallError::Fallback(format!(
             "resolve returned status {status}"
@@ -8534,7 +8537,10 @@ async fn resolve_tools_call_plan_via_backend(
                 && payload.get("jsonrpc") == Some(&Value::String(JSONRPC_VERSION.to_string()))
                 && payload.get("error").is_some()
             {
-                return ResolveToolsCallError::JsonRpcError { payload, headers };
+                return ResolveToolsCallError::JsonRpcError {
+                    payload,
+                    headers: Box::new(headers),
+                };
             }
             ResolveToolsCallError::Fallback(format!("resolve decode failed: {err}"))
         })?;
