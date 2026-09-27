@@ -28,7 +28,7 @@ name: Multiplatform Docker Build
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "release/v1.0.7-ibm-4092d336"]
     tags: ["v*"]
     paths:
       - '.dockerignore'
