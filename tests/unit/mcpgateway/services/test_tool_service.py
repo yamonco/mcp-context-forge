@@ -4461,7 +4461,7 @@ class TestToolService:
         tool_service._http_client.request.return_value = mock_response
 
         # Mock compute_passthrough_headers_cached to return modified headers
-        def mock_passthrough(req_headers, base_headers, allowed_headers, gateway_auth_type=None, gateway_passthrough_headers=None, is_token_exchange=False):
+        def mock_passthrough(req_headers, base_headers, allowed_headers, gateway_auth_type=None, gateway_passthrough_headers=None, is_token_exchange=False, is_user_oauth=False):
             combined = base_headers.copy()
             combined["X-Request-ID"] = req_headers.get("X-Request-ID", "test-123")
             return combined
@@ -4515,7 +4515,7 @@ class TestToolService:
         sse_ctx.__aenter__.return_value = ("read", "write")
 
         # Mock compute_passthrough_headers_cached to return modified headers
-        def mock_passthrough(req_headers, base_headers, allowed_headers, gateway_auth_type=None, gateway_passthrough_headers=None, is_token_exchange=False):
+        def mock_passthrough(req_headers, base_headers, allowed_headers, gateway_auth_type=None, gateway_passthrough_headers=None, is_token_exchange=False, is_user_oauth=False):
             combined = base_headers.copy()
             combined["X-Custom-Header"] = req_headers.get("X-Custom-Header", "default")
             return combined
@@ -10238,10 +10238,11 @@ class TestRustMcpExecutionPlan:
             patch.object(tool_service, "_check_tool_access", AsyncMock(return_value=True)),
             patch("mcpgateway.services.tool_service.TokenStorageService", return_value=token_storage),
             patch("mcpgateway.services.tool_service.fresh_db_session", _fresh_db_session),
-            patch("mcpgateway.services.tool_service.compute_passthrough_headers_cached", side_effect=lambda _request_headers, headers, *_args, **_kwargs: headers),
             patch.object(tool_service, "_get_plugin_manager", AsyncMock(return_value=None)),
         ):
-            plan = await tool_service.prepare_rust_mcp_tool_execution(MagicMock(), "tool-one", app_user_email="user@example.com")
+            plan = await tool_service.prepare_rust_mcp_tool_execution(
+                MagicMock(), "tool-one", app_user_email="user@example.com", request_headers={"X-Upstream-Authorization": "Bearer injected"}
+            )
 
         assert plan["eligible"] is True
         assert plan["headers"] == {"Authorization": "Bearer stored-oauth-token"}
@@ -10281,7 +10282,9 @@ class TestRustMcpExecutionPlan:
             patch.object(tool_service, "_get_plugin_manager", AsyncMock(return_value=None)),
         ):
             with pytest.raises(ToolInvocationError, match="Please authorize"):
-                await tool_service.prepare_rust_mcp_tool_execution(MagicMock(), "tool-one", app_user_email="user@example.com")
+                await tool_service.prepare_rust_mcp_tool_execution(
+                    MagicMock(), "tool-one", app_user_email="user@example.com", request_headers={"X-Upstream-Authorization": "Bearer injected"}
+                )
 
     @pytest.mark.asyncio
     async def test_prepare_rust_mcp_tool_execution_oauth_authorization_code_plugin_injects_auth(self, tool_service):
