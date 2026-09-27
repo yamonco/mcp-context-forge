@@ -20,12 +20,11 @@ import inspect as pyinspect
 # Third-Party
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-import pytest
 import sqlalchemy as sa
 
 MODULE_NAME = "mcpgateway.alembic.versions.279184dfd71d_add_name_uniqueness_constraint_to_"
 REVISION = "279184dfd71d"  # pragma: allowlist secret
-DOWN_REVISION = "e198602c3c1e"  # pragma: allowlist secret
+DOWN_REVISION = "b7a3c9d1e5f2"  # pragma: allowlist secret
 
 
 class TestResourceNameUniquenessModuleStructure:

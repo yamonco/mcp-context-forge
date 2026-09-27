@@ -6,7 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 add_name_uniqueness_constraint_to_resources
 
 Revision ID: 279184dfd71d
-Revises: e198602c3c1e
+Revises: b7a3c9d1e5f2
 Create Date: 2026-06-03 12:39:27.221653
 """
 
