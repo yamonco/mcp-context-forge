@@ -4440,6 +4440,7 @@ class ToolService(BaseService):
                 gateway_auth_type=gateway_auth_type,
                 gateway_passthrough_headers=gateway_passthrough_headers,
                 is_token_exchange=(gateway_grant_type == "token-exchange"),
+                is_user_oauth=(gateway_grant_type == "authorization_code"),
             )
 
         runtime_headers = {str(header_name): str(header_value) for header_name, header_value in headers.items() if header_name and header_value}
@@ -5823,6 +5824,7 @@ class ToolService(BaseService):
                             gateway_auth_type=gateway_auth_type,
                             gateway_passthrough_headers=effective_gateway_passthrough,
                             is_token_exchange=(gateway_grant_type == "token-exchange"),
+                            is_user_oauth=(gateway_grant_type == "authorization_code"),
                         )
                         # Read MCP-Session-Id from downstream client (MCP protocol header)
                         # and normalize to x-mcp-session-id for our internal session affinity logic
