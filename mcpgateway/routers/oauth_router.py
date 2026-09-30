@@ -23,7 +23,6 @@ import re
 import secrets
 from typing import Annotated, Any, Dict
 from urllib.parse import urlparse, urlunparse
-from uuid import UUID
 
 # Third-Party
 from cryptography.hazmat.primitives import serialization
@@ -196,7 +195,6 @@ async def _persist_learned_audience(gateway: Gateway, oauth_result: Dict[str, An
 
 oauth_router = APIRouter(prefix="/oauth", tags=["oauth"])
 
-_MANAGED_ENTRA_EMAIL = re.compile(r"^oid\.([0-9a-fA-F-]{36})\.tid\.([0-9a-fA-F-]{36})@principal\.yam\.internal$")
 _LANGBOARD_PROOF_ISSUER = "urn:yam:contextforge"
 _LANGBOARD_PROOF_AUDIENCE = "urn:yam:erp-employee-proof"
 _LANGBOARD_OAUTH_AUDIENCE = "langboard-api"
@@ -908,7 +906,7 @@ async def get_oauth_identity(
 ) -> dict[str, Any]:
     """Return a verified, current user's delegated OAuth identity without credentials.
 
-    Only a managed Entra principal can resolve the identity. The stored token is
+    Only an active Entra-authenticated user can resolve the identity. The stored token is
     scoped to the authenticated ContextForge user and gateway, and is verified
     against the gateway's configured issuer and audience before any claims are
     returned. This proves two independently authenticated identities, not that
@@ -919,17 +917,10 @@ async def get_oauth_identity(
         raise HTTPException(status_code=404, detail="Gateway not found")
     await _enforce_gateway_access(gateway_id, gateway, current_user, db, request=request)
 
-    invalid = {"state": "invalid", "issuer": None, "subject": None, "entra_object_id": None, "entra_tenant_id": None, "principal_type": None}
+    invalid = {"state": "invalid", "issuer": None, "subject": None, "contextforge_email": None, "principal_type": None}
     disconnected = {**invalid, "state": "not_connected"}
     email = _extract_user_email(current_user)
     if not email:
-        return invalid
-    match = _MANAGED_ENTRA_EMAIL.fullmatch(email)
-    if match is None:
-        return invalid
-    try:
-        managed_oid, managed_tid = UUID(match.group(1)), UUID(match.group(2))
-    except ValueError:
         return invalid
     user = db.execute(select(EmailUser).where(EmailUser.email == email)).scalar_one_or_none()
     if user is None or not user.is_active or user.auth_provider != "entra":
@@ -966,9 +957,8 @@ async def get_oauth_identity(
         "state": "connected",
         "issuer": verified_issuer,
         "subject": subject,
-        "entra_object_id": str(managed_oid),
-        "entra_tenant_id": str(managed_tid),
-        "principal_type": "managed_entra",
+        "contextforge_email": email,
+        "principal_type": "entra_authenticated",
     }
 
 
@@ -998,12 +988,10 @@ async def get_oauth_identity_attestation(
     claims = {
         "iss": _LANGBOARD_PROOF_ISSUER,
         "aud": _LANGBOARD_PROOF_AUDIENCE,
-        "sub": _extract_user_email(current_user),
+        "sub": identity["contextforge_email"],
         "oidc_iss": identity["issuer"],
         "oidc_sub": identity["subject"],
         "oidc_aud": _LANGBOARD_OAUTH_AUDIENCE,
-        "entra_oid": identity["entra_object_id"],
-        "entra_tid": identity["entra_tenant_id"],
         "iat": issued_at,
         "nbf": issued_at,
         "exp": issued_at + 60,

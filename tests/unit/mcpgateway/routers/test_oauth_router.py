@@ -2498,7 +2498,7 @@ class TestOAuthCallbackCSPCompliance:
 
 
 class TestOAuthIdentity:
-    """OAuth identity must remain scoped to the current managed principal."""
+    """OAuth identity must remain scoped to the current Entra-authenticated user."""
 
     @staticmethod
     def _db(gateway, user, token_record):
@@ -2520,12 +2520,10 @@ class TestOAuthIdentity:
         )
 
     @pytest.mark.asyncio
-    async def test_signed_token_and_managed_principal_return_separate_identities(self, mock_request):
+    async def test_signed_token_and_entra_user_return_separate_identities(self, mock_request):
         from mcpgateway.routers.oauth_router import get_oauth_identity
 
-        oid = "039e4974-121d-4f63-9744-2d45db9c1953"
-        tid = "6f9619ff-8b86-d011-b42d-00cf4fc964ff"
-        email = f"oid.{oid}.tid.{tid}@principal.yam.internal"
+        email = "employee@yamon.io"
         gateway = self._gateway()
         db = self._db(gateway, self._user(), object())
         with (
@@ -2540,9 +2538,8 @@ class TestOAuthIdentity:
             "state": "connected",
             "issuer": gateway.oauth_config["issuer"],
             "subject": "keycloak-sub",
-            "entra_object_id": oid,
-            "entra_tenant_id": tid,
-            "principal_type": "managed_entra",
+            "contextforge_email": email,
+            "principal_type": "entra_authenticated",
         }
         storage.return_value.get_user_token.assert_awaited_once_with("gateway123", email)
         verify.assert_awaited_once_with("stored-token", [gateway.oauth_config["issuer"]], expected_audience="langboard-api")
@@ -2552,7 +2549,7 @@ class TestOAuthIdentity:
     async def test_missing_connection_returns_no_identity(self, mock_request):
         from mcpgateway.routers.oauth_router import get_oauth_identity
 
-        email = "oid.039e4974-121d-4f63-9744-2d45db9c1953.tid.6f9619ff-8b86-d011-b42d-00cf4fc964ff@principal.yam.internal"
+        email = "employee@yamon.io"
         db = self._db(self._gateway(), self._user(), None)
         with patch("mcpgateway.routers.oauth_router._enforce_gateway_access", new=AsyncMock()):
             result = await get_oauth_identity("gateway123", mock_request, {"email": email}, db)
@@ -2571,7 +2568,7 @@ class TestOAuthIdentity:
     async def test_missing_trust_configuration_fails_closed(self, mock_request, oauth_config):
         from mcpgateway.routers.oauth_router import get_oauth_identity
 
-        email = "oid.039e4974-121d-4f63-9744-2d45db9c1953.tid.6f9619ff-8b86-d011-b42d-00cf4fc964ff@principal.yam.internal"
+        email = "employee@yamon.io"
         gateway = self._gateway()
         gateway.oauth_config = oauth_config
         db = self._db(gateway, self._user(), object())
@@ -2584,7 +2581,7 @@ class TestOAuthIdentity:
     async def test_local_user_cannot_read_stored_identity(self, mock_request):
         from mcpgateway.routers.oauth_router import get_oauth_identity
 
-        email = "oid.039e4974-121d-4f63-9744-2d45db9c1953.tid.6f9619ff-8b86-d011-b42d-00cf4fc964ff@principal.yam.internal"
+        email = "employee@yamon.io"
         db = self._db(self._gateway(), SimpleNamespace(is_active=True, auth_provider="local"), object())
         with patch("mcpgateway.routers.oauth_router._enforce_gateway_access", new=AsyncMock()):
             result = await get_oauth_identity("gateway123", mock_request, {"email": email}, db)
@@ -2594,7 +2591,7 @@ class TestOAuthIdentity:
     async def test_signature_failure_fails_closed(self, mock_request):
         from mcpgateway.routers.oauth_router import get_oauth_identity
 
-        email = "oid.039e4974-121d-4f63-9744-2d45db9c1953.tid.6f9619ff-8b86-d011-b42d-00cf4fc964ff@principal.yam.internal"
+        email = "employee@yamon.io"
         db = self._db(self._gateway(), self._user(), object())
         with (
             patch("mcpgateway.routers.oauth_router._enforce_gateway_access", new=AsyncMock()),
@@ -2619,7 +2616,7 @@ class TestOAuthIdentity:
     async def test_missing_or_mismatched_signed_claims_fail_closed(self, mock_request, claims):
         from mcpgateway.routers.oauth_router import get_oauth_identity
 
-        email = "oid.039e4974-121d-4f63-9744-2d45db9c1953.tid.6f9619ff-8b86-d011-b42d-00cf4fc964ff@principal.yam.internal"
+        email = "employee@yamon.io"
         db = self._db(self._gateway(), self._user(), object())
         with (
             patch("mcpgateway.routers.oauth_router._enforce_gateway_access", new=AsyncMock()),
@@ -2650,16 +2647,13 @@ class TestOAuthIdentity:
         key_path = tmp_path / "attestation.pem"
         key_path.write_bytes(private_key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
         monkeypatch.setattr("mcpgateway.routers.oauth_router.settings.langboard_identity_signing_key_path", str(key_path))
-        oid = "039e4974-121d-4f63-9744-2d45db9c1953"
-        tid = "6f9619ff-8b86-d011-b42d-00cf4fc964ff"
-        email = f"oid.{oid}.tid.{tid}@principal.yam.internal"
+        email = "employee@yamon.io"
         identity = {
             "state": "connected",
             "issuer": "https://auth.example.com/realms/yamon",
             "subject": "keycloak-sub",
-            "entra_object_id": oid,
-            "entra_tenant_id": tid,
-            "principal_type": "managed_entra",
+            "contextforge_email": email,
+            "principal_type": "entra_authenticated",
         }
         db = Mock(spec=Session)
         db.execute.return_value.scalar_one_or_none.return_value = self._gateway()
@@ -2675,8 +2669,8 @@ class TestOAuthIdentity:
         assert claims["oidc_iss"] == identity["issuer"]
         assert claims["oidc_sub"] == "keycloak-sub"
         assert claims["oidc_aud"] == "langboard-api"
-        assert claims["entra_oid"] == oid
-        assert claims["entra_tid"] == tid
+        assert "entra_oid" not in claims
+        assert "entra_tid" not in claims
         assert claims["exp"] - claims["iat"] == 60
         assert claims["jti"]
         assert response.headers["Cache-Control"] == "no-store"
@@ -2686,7 +2680,7 @@ class TestOAuthIdentity:
         from mcpgateway.routers.oauth_router import get_oauth_identity_attestation
 
         monkeypatch.setattr("mcpgateway.routers.oauth_router.settings.langboard_identity_signing_key_path", "")
-        identity = {"state": "connected", "issuer": "https://auth.example.com", "subject": "sub", "entra_object_id": "oid", "entra_tenant_id": "tid"}
+        identity = {"state": "connected", "issuer": "https://auth.example.com", "subject": "sub", "contextforge_email": "user@example.com"}
         db = Mock(spec=Session)
         db.execute.return_value.scalar_one_or_none.return_value = self._gateway()
         with patch("mcpgateway.routers.oauth_router.get_oauth_identity", new=AsyncMock(return_value=identity)):
