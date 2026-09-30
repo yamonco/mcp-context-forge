@@ -4620,7 +4620,12 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
                         grant_type = gateway_oauth_config.get("grant_type", "client_credentials")
 
                         if grant_type == "authorization_code":
-                            # For Authorization Code flow, try to get stored tokens
+                            # A periodic probe has no authority to choose another user's
+                            # grant. Missing probe credentials say nothing about reachability.
+                            if not user_email:
+                                if span:
+                                    set_span_attribute(span, "health.status", "skipped")
+                                return
                             try:
                                 # First-Party
                                 from mcpgateway.services.token_storage_service import TokenStorageService  # pylint: disable=import-outside-toplevel
@@ -4629,23 +4634,13 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
                                 with fresh_db_session() as token_db:
                                     token_storage = TokenStorageService(token_db)
 
-                                    # Get user-specific OAuth token
-                                    if not user_email:
-                                        if span:
-                                            set_span_attribute(span, "health.status", "unhealthy")
-                                            set_span_error(span, "User email required for OAuth token")
-                                        await self._handle_gateway_failure(gateway)
-                                        return
-
                                     access_token = await token_storage.get_user_token(gateway_id, user_email)
 
                                 if access_token:
                                     headers["Authorization"] = f"Bearer {access_token}"
                                 else:
                                     if span:
-                                        set_span_attribute(span, "health.status", "unhealthy")
-                                        set_span_error(span, "No valid OAuth token for user")
-                                    await self._handle_gateway_failure(gateway)
+                                        set_span_attribute(span, "health.status", "skipped")
                                     return
                             except Exception as e:
                                 logger.error("Failed to obtain stored OAuth token for gateway %s: %s", gateway_name, e)
