@@ -367,6 +367,7 @@ class Settings(BaseSettings):
     jwt_secret_key: SecretStr = Field(default=SecretStr("changeme"))
     jwt_public_key_path: str = ""
     jwt_private_key_path: str = ""
+    langboard_identity_signing_key_path: str = Field(default="", description="Ed25519 PEM private key for short-lived Langboard OAuth identity attestations; disabled when unset")
     jwt_audience: str = "mcpgateway-api"
     jwt_issuer: str = "mcpgateway"
     jwt_audience_verification: bool = True

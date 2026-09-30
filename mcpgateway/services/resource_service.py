@@ -2007,6 +2007,11 @@ class ResourceService(BaseService):
                             if isinstance(user_identity, UserCtx):
                                 headers.update(build_identity_headers(user_identity))
 
+                        if gateway_auth_type == "oauth":
+                            from mcpgateway.services.oauth_mcp_headers import apply_oauth_mcp_headers  # pylint: disable=import-outside-toplevel
+
+                            headers = apply_oauth_mcp_headers(headers, gateway_oauth_config)
+
                         async def _read_resource_text_with_retry(session: "ClientSession", uri: str, transport_name: str) -> str:
                             """Retry remote resource reads on an already established MCP session."""
                             max_read_attempts = 2

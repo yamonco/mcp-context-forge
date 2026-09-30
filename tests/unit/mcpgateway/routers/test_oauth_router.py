@@ -13,8 +13,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 # Third-Party
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+import jwt
 import pytest
 from sqlalchemy.orm import Session
 
@@ -2492,3 +2495,222 @@ class TestOAuthCallbackCSPCompliance:
 
         # Verify we collected 3 unique nonces
         assert len(nonces_seen) == 3, "Each request should have a unique CSP nonce"
+
+
+class TestOAuthIdentity:
+    """OAuth identity must remain scoped to the current Entra-authenticated user."""
+
+    @staticmethod
+    def _db(gateway, user, token_record):
+        db = Mock(spec=Session)
+        db.execute.side_effect = [SimpleNamespace(scalar_one_or_none=lambda item=item: item) for item in (gateway, user, token_record)]
+        return db
+
+    @staticmethod
+    def _user():
+        return SimpleNamespace(is_active=True, auth_provider="entra")
+
+    @staticmethod
+    def _gateway():
+        return SimpleNamespace(
+            oauth_config={"grant_type": "authorization_code", "issuer": "https://auth.example.com/realms/yamon", "resource": "langboard-api"},
+            visibility="public",
+            team_id=None,
+            owner_email=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_signed_token_and_entra_user_return_separate_identities(self, mock_request):
+        from mcpgateway.routers.oauth_router import get_oauth_identity
+
+        email = "employee@yamon.io"
+        gateway = self._gateway()
+        db = self._db(gateway, self._user(), object())
+        with (
+            patch("mcpgateway.routers.oauth_router._enforce_gateway_access", new=AsyncMock()),
+            patch("mcpgateway.routers.oauth_router.TokenStorageService") as storage,
+            patch("mcpgateway.routers.oauth_router.verify_oauth_access_token", new=AsyncMock(return_value={"iss": gateway.oauth_config["issuer"], "sub": "keycloak-sub", "exp": 4102444800})) as verify,
+        ):
+            storage.return_value.get_user_token = AsyncMock(return_value="stored-token")
+            result = await get_oauth_identity("gateway123", mock_request, {"email": email, "is_admin": False}, db)
+
+        assert result == {
+            "state": "connected",
+            "issuer": gateway.oauth_config["issuer"],
+            "subject": "keycloak-sub",
+            "contextforge_email": email,
+            "principal_type": "entra_authenticated",
+        }
+        storage.return_value.get_user_token.assert_awaited_once_with("gateway123", email)
+        verify.assert_awaited_once_with("stored-token", [gateway.oauth_config["issuer"]], expected_audience="langboard-api")
+        assert "stored-token" not in str(result)
+
+    @pytest.mark.asyncio
+    async def test_missing_connection_returns_no_identity(self, mock_request):
+        from mcpgateway.routers.oauth_router import get_oauth_identity
+
+        email = "employee@yamon.io"
+        db = self._db(self._gateway(), self._user(), None)
+        with patch("mcpgateway.routers.oauth_router._enforce_gateway_access", new=AsyncMock()):
+            result = await get_oauth_identity("gateway123", mock_request, {"email": email}, db)
+        assert result["state"] == "not_connected"
+        assert result["subject"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "oauth_config",
+        [
+            {"grant_type": "authorization_code", "resource": "langboard-api"},
+            {"grant_type": "authorization_code", "issuer": "https://auth.example.com/realms/yamon"},
+            {"grant_type": "client_credentials", "issuer": "https://auth.example.com/realms/yamon", "resource": "langboard-api"},
+        ],
+    )
+    async def test_missing_trust_configuration_fails_closed(self, mock_request, oauth_config):
+        from mcpgateway.routers.oauth_router import get_oauth_identity
+
+        email = "employee@yamon.io"
+        gateway = self._gateway()
+        gateway.oauth_config = oauth_config
+        db = self._db(gateway, self._user(), object())
+        with patch("mcpgateway.routers.oauth_router._enforce_gateway_access", new=AsyncMock()):
+            result = await get_oauth_identity("gateway123", mock_request, {"email": email}, db)
+        assert result["state"] == "invalid"
+        assert result["subject"] is None
+
+    @pytest.mark.asyncio
+    async def test_local_user_cannot_read_stored_identity(self, mock_request):
+        from mcpgateway.routers.oauth_router import get_oauth_identity
+
+        email = "employee@yamon.io"
+        db = self._db(self._gateway(), SimpleNamespace(is_active=True, auth_provider="local"), object())
+        with patch("mcpgateway.routers.oauth_router._enforce_gateway_access", new=AsyncMock()):
+            result = await get_oauth_identity("gateway123", mock_request, {"email": email}, db)
+        assert result["state"] == "invalid"
+
+    @pytest.mark.asyncio
+    async def test_signature_failure_fails_closed(self, mock_request):
+        from mcpgateway.routers.oauth_router import get_oauth_identity
+
+        email = "employee@yamon.io"
+        db = self._db(self._gateway(), self._user(), object())
+        with (
+            patch("mcpgateway.routers.oauth_router._enforce_gateway_access", new=AsyncMock()),
+            patch("mcpgateway.routers.oauth_router.TokenStorageService") as storage,
+            patch("mcpgateway.routers.oauth_router.verify_oauth_access_token", new=AsyncMock(return_value=None)),
+        ):
+            storage.return_value.get_user_token = AsyncMock(return_value="stored-token")
+            result = await get_oauth_identity("gateway123", mock_request, {"email": email}, db)
+        assert result["state"] == "invalid"
+        assert result["subject"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "claims",
+        [
+            {"iss": "https://auth.example.com/realms/yamon", "exp": 4102444800},
+            {"iss": "https://wrong.example.com/realms/yamon", "sub": "keycloak-sub", "exp": 4102444800},
+            {"iss": "https://auth.example.com/realms/yamon", "sub": "keycloak-sub"},
+            {"iss": "https://auth.example.com/realms/yamon", "sub": "keycloak-sub", "exp": 1},
+        ],
+    )
+    async def test_missing_or_mismatched_signed_claims_fail_closed(self, mock_request, claims):
+        from mcpgateway.routers.oauth_router import get_oauth_identity
+
+        email = "employee@yamon.io"
+        db = self._db(self._gateway(), self._user(), object())
+        with (
+            patch("mcpgateway.routers.oauth_router._enforce_gateway_access", new=AsyncMock()),
+            patch("mcpgateway.routers.oauth_router.TokenStorageService") as storage,
+            patch("mcpgateway.routers.oauth_router.verify_oauth_access_token", new=AsyncMock(return_value=claims)),
+        ):
+            storage.return_value.get_user_token = AsyncMock(return_value="stored-token")
+            result = await get_oauth_identity("gateway123", mock_request, {"email": email}, db)
+        assert result["state"] == "invalid"
+        assert result["subject"] is None
+
+    @pytest.mark.asyncio
+    async def test_gateway_scope_denied_before_token_read(self, mock_request):
+        from mcpgateway.routers.oauth_router import get_oauth_identity
+
+        db = self._db(self._gateway(), self._user(), object())
+        with patch("mcpgateway.routers.oauth_router._enforce_gateway_access", new=AsyncMock(side_effect=HTTPException(status_code=403))):
+            with pytest.raises(HTTPException) as exc:
+                await get_oauth_identity("gateway123", mock_request, {"email": "user@example.com"}, db)
+        assert exc.value.status_code == 403
+        assert db.execute.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_attestation_uses_dedicated_ed25519_key_and_60_second_lifetime(self, mock_request, tmp_path, monkeypatch):
+        from mcpgateway.routers.oauth_router import get_langboard_identity_jwks, get_oauth_identity_attestation
+
+        private_key = Ed25519PrivateKey.generate()
+        key_path = tmp_path / "attestation.pem"
+        key_path.write_bytes(private_key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+        monkeypatch.setattr("mcpgateway.routers.oauth_router.settings.langboard_identity_signing_key_path", str(key_path))
+        email = "employee@yamon.io"
+        identity = {
+            "state": "connected",
+            "issuer": "https://auth.example.com/realms/yamon",
+            "subject": "keycloak-sub",
+            "contextforge_email": email,
+            "principal_type": "entra_authenticated",
+        }
+        db = Mock(spec=Session)
+        db.execute.return_value.scalar_one_or_none.return_value = self._gateway()
+        response = Mock(spec=Response)
+        response.headers = {}
+        with patch("mcpgateway.routers.oauth_router.get_oauth_identity", new=AsyncMock(return_value=identity)):
+            result = await get_oauth_identity_attestation("gateway123", mock_request, response, {"email": email}, db)
+        jwks = await get_langboard_identity_jwks()
+        assert jwks["keys"][0]["x"]
+        assert jwks["keys"][0]["kid"] == jwt.get_unverified_header(result["attestation"])["kid"]
+        claims = jwt.decode(result["attestation"], private_key.public_key(), algorithms=["EdDSA"], issuer="urn:yam:contextforge", audience="urn:yam:erp-employee-proof")
+        assert claims["sub"] == email
+        assert claims["oidc_iss"] == identity["issuer"]
+        assert claims["oidc_sub"] == "keycloak-sub"
+        assert claims["oidc_aud"] == "langboard-api"
+        assert "entra_oid" not in claims
+        assert "entra_tid" not in claims
+        assert claims["exp"] - claims["iat"] == 60
+        assert claims["jti"]
+        assert response.headers["Cache-Control"] == "no-store"
+
+    @pytest.mark.asyncio
+    async def test_attestation_requires_configured_signer(self, mock_request, monkeypatch):
+        from mcpgateway.routers.oauth_router import get_oauth_identity_attestation
+
+        monkeypatch.setattr("mcpgateway.routers.oauth_router.settings.langboard_identity_signing_key_path", "")
+        identity = {"state": "connected", "issuer": "https://auth.example.com", "subject": "sub", "contextforge_email": "user@example.com"}
+        db = Mock(spec=Session)
+        db.execute.return_value.scalar_one_or_none.return_value = self._gateway()
+        with patch("mcpgateway.routers.oauth_router.get_oauth_identity", new=AsyncMock(return_value=identity)):
+            with pytest.raises(HTTPException) as exc:
+                await get_oauth_identity_attestation("gateway123", mock_request, Mock(spec=Response), {"email": "user@example.com"}, db)
+        assert exc.value.status_code == 503
+
+    @pytest.mark.asyncio
+    async def test_attestation_rejects_non_ed25519_signer(self, tmp_path, monkeypatch):
+        from cryptography.hazmat.primitives.asymmetric.ed448 import Ed448PrivateKey
+        from mcpgateway.routers.oauth_router import get_langboard_identity_jwks
+
+        key_path = tmp_path / "wrong-key.pem"
+        key_path.write_bytes(Ed448PrivateKey.generate().private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+        monkeypatch.setattr("mcpgateway.routers.oauth_router.settings.langboard_identity_signing_key_path", str(key_path))
+
+        with pytest.raises(HTTPException) as exc:
+            await get_langboard_identity_jwks()
+        assert exc.value.status_code == 503
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("identity_state, resource, expected_status", [("not_connected", "langboard-api", 409), ("connected", "other-api", 403)])
+    async def test_attestation_rejects_disconnected_identity_or_other_gateway(self, mock_request, identity_state, resource, expected_status):
+        from mcpgateway.routers.oauth_router import get_oauth_identity_attestation
+
+        gateway = self._gateway()
+        gateway.oauth_config["resource"] = resource
+        db = Mock(spec=Session)
+        db.execute.return_value.scalar_one_or_none.return_value = gateway
+        with patch("mcpgateway.routers.oauth_router.get_oauth_identity", new=AsyncMock(return_value={"state": identity_state})):
+            with pytest.raises(HTTPException) as exc:
+                await get_oauth_identity_attestation("gateway123", mock_request, Mock(spec=Response), {"email": "user@example.com"}, db)
+        assert exc.value.status_code == expected_status

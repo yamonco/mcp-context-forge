@@ -12,17 +12,24 @@ This module handles OAuth 2.0 Authorization Code flow endpoints including:
 """
 
 # Standard
+import base64
+from datetime import datetime, timezone
+import hashlib
 from html import escape
 import json
 import logging
+from pathlib import Path
 import re
 import secrets
 from typing import Annotated, Any, Dict
 from urllib.parse import urlparse, urlunparse
 
 # Third-Party
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
+import jwt
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -31,7 +38,7 @@ from mcpgateway.auth import normalize_token_teams
 from mcpgateway.common.query_params import QueryErrorCode
 from mcpgateway.common.validators import SecurityValidator
 from mcpgateway.config import settings
-from mcpgateway.db import Gateway, get_db
+from mcpgateway.db import EmailUser, Gateway, OAuthToken, get_db
 from mcpgateway.middleware.rbac import get_current_user_with_permissions, require_permission
 from mcpgateway.middleware.token_scoping import token_scoping_middleware
 from mcpgateway.schemas import EmailUserResponse
@@ -45,6 +52,7 @@ from mcpgateway.utils.csp_nonce import get_csp_nonce_from_request
 from mcpgateway.utils.log_sanitizer import sanitize_for_log
 from mcpgateway.utils.paths import resolve_root_path
 from mcpgateway.utils.verify_credentials import get_auth_header_value
+from mcpgateway.utils.verify_credentials import verify_oauth_access_token
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +194,28 @@ async def _persist_learned_audience(gateway: Gateway, oauth_result: Dict[str, An
 
 
 oauth_router = APIRouter(prefix="/oauth", tags=["oauth"])
+
+_LANGBOARD_PROOF_ISSUER = "urn:yam:contextforge"
+_LANGBOARD_PROOF_AUDIENCE = "urn:yam:erp-employee-proof"
+_LANGBOARD_OAUTH_AUDIENCE = "langboard-api"
+
+
+def _langboard_identity_signer() -> tuple[Ed25519PrivateKey, str, str]:
+    """Load the dedicated attestation signer and its public JWK coordinates."""
+    path = settings.langboard_identity_signing_key_path
+    if not path:
+        raise HTTPException(status_code=503, detail="OAuth identity attestation unavailable")
+    try:
+        private_key = serialization.load_pem_private_key(Path(path).read_bytes(), password=None)
+        if not isinstance(private_key, Ed25519PrivateKey):
+            raise ValueError("Unexpected key type")
+        public_bytes = private_key.public_key().public_bytes(encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw)
+    except (OSError, ValueError, TypeError) as exc:
+        logger.error("OAuth identity attestation signer unavailable: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="OAuth identity attestation unavailable") from exc
+    x = base64.urlsafe_b64encode(public_bytes).rstrip(b"=").decode("ascii")
+    kid = hashlib.sha256(public_bytes).hexdigest()[:24]
+    return private_key, x, kid
 
 
 def _require_admin_user(current_user: EmailUserResponse) -> None:
@@ -858,6 +888,117 @@ async def oauth_callback(
         """,
             status_code=500,
         )
+
+
+@oauth_router.get("/identity/jwks")
+async def get_langboard_identity_jwks() -> dict[str, Any]:
+    """Publish the current attestation public key; private key remains server-side."""
+    _, x, kid = _langboard_identity_signer()
+    return {"keys": [{"kty": "OKP", "crv": "Ed25519", "use": "sig", "alg": "EdDSA", "kid": kid, "x": x}]}
+
+
+@oauth_router.get("/identity/{gateway_id}")
+async def get_oauth_identity(
+    gateway_id: str,
+    request: Request,
+    current_user: EmailUserResponse = Depends(get_current_user_with_permissions),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Return a verified, current user's delegated OAuth identity without credentials.
+
+    Only an active Entra-authenticated user can resolve the identity. The stored token is
+    scoped to the authenticated ContextForge user and gateway, and is verified
+    against the gateway's configured issuer and audience before any claims are
+    returned. This proves two independently authenticated identities, not that
+    they represent the same employee; the caller must check ERP's live mapping.
+    """
+    gateway = db.execute(select(Gateway).where(Gateway.id == gateway_id)).scalar_one_or_none()
+    if gateway is None:
+        raise HTTPException(status_code=404, detail="Gateway not found")
+    await _enforce_gateway_access(gateway_id, gateway, current_user, db, request=request)
+
+    invalid = {"state": "invalid", "issuer": None, "subject": None, "contextforge_email": None, "principal_type": None}
+    disconnected = {**invalid, "state": "not_connected"}
+    email = _extract_user_email(current_user)
+    if not email:
+        return invalid
+    user = db.execute(select(EmailUser).where(EmailUser.email == email)).scalar_one_or_none()
+    if user is None or not user.is_active or user.auth_provider != "entra":
+        return invalid
+
+    config = gateway.oauth_config or {}
+    issuer, audience = config.get("issuer"), config.get("resource")
+    if config.get("grant_type") != "authorization_code" or not isinstance(issuer, str) or not issuer.startswith("https://") or not isinstance(audience, str) or not audience:
+        return invalid
+
+    record = db.execute(select(OAuthToken).where(OAuthToken.gateway_id == gateway_id, OAuthToken.app_user_email == email)).scalar_one_or_none()
+    if record is None:
+        return disconnected
+    token = await TokenStorageService(db).get_user_token(gateway_id, email)
+    if not token:
+        return invalid
+    claims = await verify_oauth_access_token(token, [issuer], expected_audience=audience)
+    if not claims:
+        return invalid
+
+    subject = claims.get("sub")
+    verified_issuer = claims.get("iss")
+    expiry = claims.get("exp")
+    if (
+        not isinstance(subject, str)
+        or not subject.strip()
+        or not isinstance(verified_issuer, str)
+        or verified_issuer.rstrip("/") != issuer.rstrip("/")
+        or not isinstance(expiry, int)
+        or expiry <= datetime.now(timezone.utc).timestamp()
+    ):
+        return invalid
+    return {
+        "state": "connected",
+        "issuer": verified_issuer,
+        "subject": subject,
+        "contextforge_email": email,
+        "principal_type": "entra_authenticated",
+    }
+
+
+@oauth_router.get("/identity/{gateway_id}/attestation")
+async def get_oauth_identity_attestation(
+    gateway_id: str,
+    request: Request,
+    response: Response,
+    current_user: EmailUserResponse = Depends(get_current_user_with_permissions),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Attest verified OAuth identity for ERP's independent same-person check.
+
+    The assertion never contains the upstream access or refresh token and never
+    claims that the Keycloak subject is an employee. ERP must compare both
+    independently authenticated identities against its current projection.
+    """
+    identity = await get_oauth_identity(gateway_id, request, current_user, db)
+    if identity["state"] != "connected":
+        raise HTTPException(status_code=409, detail="OAuth identity is not connected or valid")
+    gateway = db.execute(select(Gateway).where(Gateway.id == gateway_id)).scalar_one_or_none()
+    if gateway is None or (gateway.oauth_config or {}).get("resource") != _LANGBOARD_OAUTH_AUDIENCE:
+        raise HTTPException(status_code=403, detail="Gateway is not configured for Langboard employee proof")
+
+    private_key, _, kid = _langboard_identity_signer()
+    issued_at = int(datetime.now(timezone.utc).timestamp())
+    claims = {
+        "iss": _LANGBOARD_PROOF_ISSUER,
+        "aud": _LANGBOARD_PROOF_AUDIENCE,
+        "sub": identity["contextforge_email"],
+        "oidc_iss": identity["issuer"],
+        "oidc_sub": identity["subject"],
+        "oidc_aud": _LANGBOARD_OAUTH_AUDIENCE,
+        "iat": issued_at,
+        "nbf": issued_at,
+        "exp": issued_at + 60,
+        "jti": secrets.token_urlsafe(16),
+    }
+    response.headers["Cache-Control"] = "no-store"
+    return {"attestation": jwt.encode(claims, private_key, algorithm="EdDSA", headers={"kid": kid})}
 
 
 @oauth_router.get("/status/{gateway_id}")

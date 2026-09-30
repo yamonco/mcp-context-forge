@@ -103,6 +103,7 @@ from mcpgateway.services.http_client_service import get_default_verify, get_http
 from mcpgateway.services.logging_service import LoggingService
 from mcpgateway.services.mcp_apps import merge_mcp_protocol_meta, optional_extension_metadata, validate_extension_metadata, validate_ui_resource
 from mcpgateway.services.oauth_manager import OAuthManager
+from mcpgateway.services.oauth_mcp_headers import apply_oauth_mcp_headers, oauth_mcp_headers
 from mcpgateway.services.session_affinity import register_gateway_capabilities_for_notifications
 from mcpgateway.services.structured_logger import get_structured_logger
 from mcpgateway.services.team_management_service import TeamManagementService
@@ -1474,6 +1475,7 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
         await self._enforce_token_exchange_admin_only(db, raw_oauth_config, owner_email)
         raw_oauth_config = await self._auto_discover_oauth_endpoints(raw_oauth_config)
         raw_oauth_config = self._validate_token_exchange_config(raw_oauth_config)
+        oauth_mcp_headers(raw_oauth_config)
         oauth_config = await protect_oauth_config_for_storage(raw_oauth_config)
         ca_certificate = getattr(gateway, "ca_certificate", None)
         init_client_cert = getattr(gateway, "client_cert", None)
@@ -2249,7 +2251,7 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
                 raise GatewayConnectionError(f"Refusing to forward OAuth token for gateway '{gateway.name}': {detail}. Fix oauth_config (resource/scopes/issuer) or the IdP token request.")
 
             # Now connect to MCP server with the access token
-            authentication = {"Authorization": f"Bearer {access_token}"}
+            authentication = apply_oauth_mcp_headers({"Authorization": f"Bearer {access_token}"}, gateway.oauth_config)
 
             # Use the existing connection logic with validation context for diagnostics
             if gateway.transport.upper() == "SSE":
@@ -2846,6 +2848,7 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
                     await self._enforce_token_exchange_admin_only(db, raw_oauth_update, user_email)
                     raw_oauth_update = await self._auto_discover_oauth_endpoints(raw_oauth_update)
                     raw_oauth_update = self._validate_token_exchange_config(raw_oauth_update)
+                    oauth_mcp_headers(raw_oauth_update)
                     gateway.oauth_config = await protect_oauth_config_for_storage(raw_oauth_update, existing_oauth_config=gateway.oauth_config)
 
                 # Handle auth_value updates (both existing and new auth values)
@@ -4681,6 +4684,9 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
                         else:
                             headers = {}
 
+                    if gateway_auth_type == "oauth":
+                        headers = apply_oauth_mcp_headers(headers, gateway_oauth_config)
+
                     # Perform the GET and raise on 4xx/5xx
                     if (gateway_transport).lower() == "sse":
                         timeout = httpx.Timeout(settings.health_check_timeout)
@@ -5030,6 +5036,8 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
             validation_errors: list[str] = []
             if auth_type in ("basic", "bearer", "authheaders") and isinstance(authentication, str):
                 authentication = decode_auth(authentication)
+            if auth_type == "oauth":
+                authentication = apply_oauth_mcp_headers(authentication, oauth_config)
             if transport.lower() == "sse":
                 capabilities, tools, resources, prompts, validation_errors = await self.connect_to_sse_server(
                     url, authentication, ca_certificate, include_prompts, include_resources, auth_query_params, client_cert=client_cert, client_key=client_key
@@ -7192,6 +7200,9 @@ async def test_gateway_connectivity(
                 headers.update(gateway.auth_value)
             elif isinstance(gateway.auth_value, str):
                 headers.update(decode_auth(gateway.auth_value))
+
+        if gateway and gateway.auth_type == "oauth":
+            headers = apply_oauth_mcp_headers(headers, gateway.oauth_config)
 
         # Prepare request based on content type
         content_type = getattr(request, "content_type", "application/json")
