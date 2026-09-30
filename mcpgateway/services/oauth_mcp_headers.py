@@ -1,4 +1,10 @@
-"""Static, validated MCP headers carried by an OAuth gateway configuration."""
+# -*- coding: utf-8 -*-
+"""Location: ./mcpgateway/services/oauth_mcp_headers.py
+Copyright contributors to the MCP-CONTEXT-FORGE project
+SPDX-License-Identifier: Apache-2.0
+
+Static, validated MCP headers carried by an OAuth gateway configuration.
+"""
 
 import re
 from typing import Any, Mapping

@@ -1,4 +1,10 @@
-"""OAuth MCP group selection stays static across caller and hook headers."""
+# -*- coding: utf-8 -*-
+"""Location: ./tests/unit/mcpgateway/services/test_oauth_mcp_headers.py
+Copyright contributors to the MCP-CONTEXT-FORGE project
+SPDX-License-Identifier: Apache-2.0
+
+OAuth MCP group selection stays static across caller and hook headers.
+"""
 
 import pytest
 from unittest.mock import AsyncMock
