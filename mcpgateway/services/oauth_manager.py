@@ -995,7 +995,13 @@ class OAuthManager:
                 scopes=scopes_list,
             )
 
-            return {"success": True, "user_id": user_id, "expires_at": token_record.expires_at.isoformat() if token_record.expires_at else None, "token_aud": token_aud}
+            return {
+                "success": True,
+                "user_id": user_id,
+                "app_user_email": app_user_email,
+                "expires_at": token_record.expires_at.isoformat() if token_record.expires_at else None,
+                "token_aud": token_aud,
+            }
         return {"success": True, "user_id": user_id, "expires_at": None, "token_aud": token_aud}
 
     async def get_access_token_for_user(self, gateway_id: str, app_user_email: str) -> Optional[str]:

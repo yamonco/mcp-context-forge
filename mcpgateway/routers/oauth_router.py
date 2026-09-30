@@ -692,6 +692,21 @@ async def oauth_callback(
 
         logger.info(f"Completed OAuth flow for gateway {SecurityValidator.sanitize_log_message(gateway_id)}, user {SecurityValidator.sanitize_log_message(str(result.get('user_id')))}")
 
+        # The email comes only from the server-validated OAuth state, never the callback URL.
+        # TokenStorageService has committed the user's token before we import the catalog.
+        import_status = "<p>OAuth token saved. Tool import is unavailable; contact an administrator.</p>"
+        app_user_email = result.get("app_user_email")
+        if isinstance(app_user_email, str) and app_user_email:
+            try:
+                # First-Party
+                from mcpgateway.services.gateway_service import GatewayService
+
+                imported = await GatewayService().fetch_tools_after_oauth(db, gateway_id, app_user_email)
+                import_status = f"<p>Imported {len(imported.get('tools', []))} tools from the MCP server.</p>"
+            except Exception as import_error:
+                logger.warning("OAuth token saved but tool import failed for gateway %s: %s", SecurityValidator.sanitize_log_message(gateway_id), type(import_error).__name__)
+                import_status = "<p>OAuth token saved, but tool import failed. You can retry below or ask an administrator.</p>"
+
         # Return success page with option to return to admin
         # Get CSP nonce for inline script
         csp_nonce = get_csp_nonce_from_request(request)
@@ -737,8 +752,8 @@ async def oauth_callback(
             </div>
 
             <div style="margin: 30px 0;">
-                <h3>Next Steps:</h3>
-                <p>Now that OAuth authorization is complete, you can fetch tools from the MCP server:</p>
+                <h3>Tool import:</h3>
+                {import_status}
                 <button id="fetch-tools-btn" class="button" style="background-color: #059669;">
                     🔧 Fetch Tools from MCP Server
                 </button>
@@ -765,7 +780,7 @@ async def oauth_callback(
                         try {{
                             const response = await fetch('{safe_root_path}/oauth/fetch-tools/{escape(str(gateway_id), quote=True)}', {{
                                 method: 'POST',
-                                credentials: 'include',  # pragma: allowlist secret
+                                credentials: 'include', // pragma: allowlist secret
                                 headers: {{
                                     'Accept': 'application/json',
                                     'X-CSRF-Token': {json.dumps(csrf_token)}
