@@ -100,7 +100,7 @@ def test_is_token_expired_naive_datetime(service):
 @pytest.mark.asyncio
 async def test_store_tokens_new(service, mock_db):
     mock_db.execute.return_value.scalar_one_or_none.return_value = None
-    result = await service.store_tokens(
+    await service.store_tokens(
         gateway_id="gw-1",
         user_id="user-1",
         app_user_email="user@test.com",
@@ -117,7 +117,7 @@ async def test_store_tokens_new(service, mock_db):
 async def test_store_tokens_update_existing(service, mock_db):
     existing = _make_token_record()
     mock_db.execute.return_value.scalar_one_or_none.return_value = existing
-    result = await service.store_tokens(
+    await service.store_tokens(
         gateway_id="gw-1",
         user_id="user-1",
         app_user_email="user@test.com",
@@ -133,7 +133,7 @@ async def test_store_tokens_update_existing(service, mock_db):
 @pytest.mark.asyncio
 async def test_store_tokens_no_encryption(service_no_encryption, mock_db):
     mock_db.execute.return_value.scalar_one_or_none.return_value = None
-    result = await service_no_encryption.store_tokens(
+    await service_no_encryption.store_tokens(
         gateway_id="gw-1",
         user_id="user-1",
         app_user_email="user@test.com",
@@ -216,6 +216,27 @@ async def test_get_user_token_valid(service, mock_db):
     mock_db.execute.return_value.scalar_one_or_none.return_value = record
     result = await service.get_user_token("gw-1", "user@test.com")
     assert result == "decrypted_value"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("lifetime", "remaining", "explicit_threshold", "should_refresh"),
+    [
+        (300, 240, None, False),
+        (300, 45, None, True),
+        (3600, 240, None, True),
+        (300, 240, 300, True),
+    ],
+)
+async def test_get_user_token_refresh_margin_respects_lifetime(service, mock_db, lifetime, remaining, explicit_threshold, should_refresh):
+    now = datetime.now(timezone.utc)
+    record = _make_token_record(expires_at=now + timedelta(seconds=remaining), updated_at=now - timedelta(seconds=lifetime - remaining))
+    mock_db.execute.return_value.scalar_one_or_none.return_value = record
+    refresh = AsyncMock(return_value="new_token")
+    with patch.object(service, "_refresh_access_token", refresh):
+        result = await service.get_user_token("gw-1", "user@test.com", threshold_seconds=explicit_threshold)
+    assert result == ("new_token" if should_refresh else "decrypted_value")
+    assert refresh.await_count == int(should_refresh)
 
 
 @pytest.mark.asyncio
@@ -545,7 +566,6 @@ async def test_refresh_client_secret_decrypt_fails_uses_plaintext(service, mock_
     mock_db.query.return_value.filter.return_value.first.return_value = gw
 
     call_count = 0
-    original_decrypt = service.encryption.decrypt_secret_async
 
     async def selective_decrypt(value):
         nonlocal call_count
