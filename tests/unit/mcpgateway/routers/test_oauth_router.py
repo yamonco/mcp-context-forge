@@ -9,6 +9,9 @@ This module tests OAuth endpoints including authorization flow, callbacks, and s
 
 # Standard
 from datetime import datetime, timezone
+import re
+import shutil
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -747,6 +750,36 @@ class TestOAuthRouter:
                 call_args = mock_oauth_manager.complete_authorization_code_flow.call_args
                 oauth_config_passed = call_args[0][3]  # 4th positional arg is credentials
                 assert oauth_config_passed["resource"] == "https://mcp.example.com"  # Normalized URL
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("import_error", [None, RuntimeError("server unavailable")])
+    async def test_oauth_callback_imports_for_validated_user_after_token_storage(self, mock_db, mock_request, mock_gateway, import_error):
+        """A saved user token triggers catalog import; import failure keeps OAuth success visible."""
+        mock_db.execute.return_value.scalar_one_or_none.return_value = mock_gateway
+        token_result = {"user_id": "idp-user", "app_user_email": "employee@example.com", "expires_at": None, "token_aud": None}
+
+        with patch("mcpgateway.routers.oauth_router.OAuthManager") as oauth_class, patch("mcpgateway.routers.oauth_router.TokenStorageService"), patch(
+            "mcpgateway.services.gateway_service.GatewayService"
+        ) as gateway_class:
+            manager = oauth_class.return_value
+            manager.resolve_gateway_id_from_state = AsyncMock(return_value="gateway123")
+            manager.complete_authorization_code_flow = AsyncMock(return_value=token_result)
+            gateway_service = gateway_class.return_value
+            gateway_service.fetch_tools_after_oauth = AsyncMock(side_effect=import_error, return_value={"tools": [{"name": "search"}]})
+
+            from mcpgateway.routers.oauth_router import oauth_callback
+
+            response = await oauth_callback(code="auth-code", state="opaque-state", request=mock_request, db=mock_db)
+
+        gateway_service.fetch_tools_after_oauth.assert_awaited_once_with(mock_db, "gateway123", "employee@example.com")
+        assert response.status_code == 200
+        body = response.body.decode()
+        expected = "Imported 1 tools" if import_error is None else "OAuth token saved, but tool import failed"
+        assert expected in body
+        if shutil.which("node"):
+            script = re.search(r"<script[^>]*>(.*?)</script>", body, re.DOTALL)
+            assert script is not None
+            subprocess.run(["node", "--check"], input=script.group(1), text=True, capture_output=True, check=True)
 
     @pytest.mark.asyncio
     async def test_oauth_callback_resource_string_persisted_as_is(self, mock_db, mock_request):
