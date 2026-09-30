@@ -23,7 +23,7 @@ CANONICAL_MODULE_NAME = "mcpgateway.alembic.versions.6c0e5f8a9b1d_add_gateway_li
 REVISION = "b7a3c9d1e5f2"  # pragma: allowlist secret
 DOWN_REVISION = "e198602c3c1e"  # pragma: allowlist secret
 NEXT_REVISION = "279184dfd71d"  # pragma: allowlist secret
-HEAD_REVISION = "b6c7d8e9f0a1"  # pragma: allowlist secret
+HEAD_REVISION = "7ab59991e017"  # pragma: allowlist secret
 
 
 def _migration_context(connection: sa.Connection) -> MigrationContext:
@@ -90,3 +90,14 @@ def test_repair_revision_has_an_upgrade_path_to_the_single_head() -> None:
     steps = [str(step) for step in script._upgrade_revs("heads", REVISION)]
     assert any(NEXT_REVISION in step for step in steps)
     assert any(HEAD_REVISION in step for step in steps)
+
+
+def test_deployed_oauth_revision_is_the_current_single_head() -> None:
+    """Keep the migration scripts for the revision already stamped in production."""
+    script = ScriptDirectory.from_config(Config("mcpgateway/alembic.ini"))
+
+    assert script.get_heads() == [HEAD_REVISION]
+    assert script.get_revision(HEAD_REVISION).down_revision == "c9f8e7d6a4b3"  # pragma: allowlist secret
+    assert script.get_revision("c9f8e7d6a4b3").down_revision == "e1a2b3c4d5f6"  # pragma: allowlist secret
+    assert script.get_revision("e1a2b3c4d5f6").down_revision == "d21698ae4a19"  # pragma: allowlist secret
+    assert script.get_revision("d21698ae4a19").down_revision == "b6c7d8e9f0a1"  # pragma: allowlist secret
