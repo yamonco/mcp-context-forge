@@ -3092,11 +3092,17 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
                         created_via="update",
                         update_visibility=_vis_changed,
                     )
+                    # Authorization-code discovery has no user grant during a gateway
+                    # update. An empty result cannot establish that imported items
+                    # were removed upstream, so retain the previous catalog.
+                    is_auth_code_gateway = gateway.oauth_config and isinstance(gateway.oauth_config, dict) and gateway.oauth_config.get("grant_type") == "authorization_code"
+                    skip_stale_cleanup = not tools and not resources and not prompts and is_auth_code_gateway
                     self._reconcile_gateway_catalog(
                         db,
                         gateway=gateway,
                         catalog_sync=catalog_sync,
                         log_context="gateway update",
+                        skip_stale_cleanup=skip_stale_cleanup,
                     )
 
                     gateway.capabilities = capabilities

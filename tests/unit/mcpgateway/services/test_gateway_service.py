@@ -1519,6 +1519,41 @@ class TestGatewayService:
         assert result.name == "updated_gateway"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("oauth_config", "discovered_names", "expected_names"),
+        [
+            ({"grant_type": "authorization_code"}, [], ["existing_tool"]),
+            ({"grant_type": "authorization_code"}, ["replacement_tool"], []),
+            (None, [], []),
+        ],
+    )
+    async def test_update_gateway_auth_code_empty_discovery_preserves_catalog(self, gateway_service, mock_gateway, test_db, oauth_config, discovered_names, expected_names):
+        """Only an unauthenticated empty auth-code discovery preserves imported tools."""
+        existing_tool = MagicMock(spec=DbTool, id=101, original_name="existing_tool")
+        mock_gateway.tools = [existing_tool]
+        mock_gateway.resources = []
+        mock_gateway.prompts = []
+        mock_gateway.oauth_config = oauth_config
+        mock_gateway.auth_type = "oauth" if oauth_config else "bearer"
+        test_db.execute = Mock(return_value=_make_execute_result(scalar=mock_gateway))
+        test_db.commit = Mock()
+        test_db.refresh = Mock()
+        test_db.expire = Mock()
+
+        discovered_tools = [MagicMock(name=name) for name in discovered_names]
+        for tool, name in zip(discovered_tools, discovered_names):
+            tool.name = name
+        gateway_service._initialize_gateway = AsyncMock(return_value=({}, discovered_tools, [], [], []))
+        gateway_service._update_or_create_tools = Mock(return_value=[])
+        gateway_service._update_or_create_resources = Mock(return_value=[])
+        gateway_service._update_or_create_prompts = Mock(return_value=[])
+        gateway_service._notify_gateway_updated = AsyncMock()
+
+        await gateway_service.update_gateway(test_db, 1, GatewayUpdate(description="Bootstrap refresh"))
+
+        assert [tool.original_name for tool in mock_gateway.tools] == expected_names
+
+    @pytest.mark.asyncio
     async def test_update_gateway_not_found(self, gateway_service, test_db):
         """Updating a non-existent gateway surfaces GatewayError with message."""
         test_db.execute = Mock(return_value=_make_execute_result(scalar=None))
