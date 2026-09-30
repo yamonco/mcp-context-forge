@@ -381,7 +381,7 @@ class TestCheckSingleGatewayHealthReal:
         update_db.commit.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_oauth_authorization_code_missing_user_email_marks_unhealthy_and_handles_failure(self):
+    async def test_oauth_authorization_code_missing_user_email_skips_health_probe(self):
         service = GatewayService()
         service._handle_gateway_failure = AsyncMock()
 
@@ -438,7 +438,8 @@ class TestCheckSingleGatewayHealthReal:
             mock_tss.return_value.get_user_token = AsyncMock(return_value="token")
             await service._check_single_gateway_health(gateway, user_email=None)
 
-        service._handle_gateway_failure.assert_awaited_once()
+        service._handle_gateway_failure.assert_not_awaited()
+        mock_tss.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_oauth_client_credentials_failure_marks_unhealthy_and_handles_failure(self):

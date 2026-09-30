@@ -6289,7 +6289,7 @@ class TestCheckSingleGatewayHealth:
 
     @pytest.mark.asyncio
     async def test_health_check_oauth_auth_code_no_user(self, gateway_service, monkeypatch):
-        """Auth code OAuth without user_email → marks gateway unhealthy."""
+        """Auth code OAuth without a probe identity does not mark all users offline."""
         gw = _make_gateway(
             id="gw-1",
             name="oauth-authcode-gw",
@@ -6325,7 +6325,7 @@ class TestCheckSingleGatewayHealth:
         gateway_service._handle_gateway_failure = AsyncMock()
 
         await gateway_service._check_single_gateway_health(gw, user_email=None)
-        gateway_service._handle_gateway_failure.assert_awaited_once()
+        gateway_service._handle_gateway_failure.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_health_check_query_param_auth(self, gateway_service, monkeypatch):
@@ -7797,7 +7797,7 @@ class TestCheckSingleHealthAuthCode:
 
     @pytest.mark.asyncio
     async def test_auth_code_no_user_email(self, gateway_service, monkeypatch):
-        """Auth code health check without user email calls failure handler."""
+        """Auth code health check without user email leaves global reachability unchanged."""
         gw = MagicMock(spec=DbGateway)
         gw.id = "gw1"
         gw.name = "test"
@@ -7815,11 +7815,12 @@ class TestCheckSingleHealthAuthCode:
         monkeypatch.setattr("mcpgateway.services.gateway_service.create_span", MagicMock(return_value=MagicMock(__enter__=MagicMock(return_value=MagicMock()), __exit__=MagicMock(return_value=False))))
 
         await gateway_service._check_single_gateway_health(gw, user_email=None)
-        gateway_service._handle_gateway_failure.assert_awaited_once()
+        gateway_service._handle_gateway_failure.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_auth_code_token_found(self, gateway_service, monkeypatch):
-        """Auth code health check with valid token makes request."""
+    @pytest.mark.parametrize("upstream_failure", [False, True])
+    async def test_auth_code_token_found(self, gateway_service, monkeypatch, upstream_failure):
+        """Valid user token probes upstream and still marks a real outage unhealthy."""
         gw = MagicMock(spec=DbGateway)
         gw.id = "gw1"
         gw.name = "test"
@@ -7855,15 +7856,23 @@ class TestCheckSingleHealthAuthCode:
                 __aexit__=AsyncMock(return_value=False),
             )
         )
+        if upstream_failure:
+            client_mock.stream.side_effect = ConnectionError("upstream down")
         monkeypatch.setattr(
             "mcpgateway.services.gateway_service.get_isolated_http_client", MagicMock(return_value=MagicMock(__aenter__=AsyncMock(return_value=client_mock), __aexit__=AsyncMock(return_value=False)))
         )
 
+        gateway_service._handle_gateway_failure = AsyncMock()
         await gateway_service._check_single_gateway_health(gw, user_email="user@test.com")
+        mock_token_svc.get_user_token.assert_awaited_once_with("gw1", "user@test.com")
+        if upstream_failure:
+            gateway_service._handle_gateway_failure.assert_awaited_once()
+        else:
+            gateway_service._handle_gateway_failure.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_auth_code_no_token_calls_failure(self, gateway_service, monkeypatch):
-        """Auth code health check without stored token calls failure handler."""
+    async def test_auth_code_no_token_skips_health_probe(self, gateway_service, monkeypatch):
+        """Admin without a grant cannot mark another user's gateway offline."""
         gw = MagicMock(spec=DbGateway)
         gw.id = "gw1"
         gw.name = "test"
@@ -7890,7 +7899,8 @@ class TestCheckSingleHealthAuthCode:
 
         gateway_service._handle_gateway_failure = AsyncMock()
         await gateway_service._check_single_gateway_health(gw, user_email="user@test.com")
-        gateway_service._handle_gateway_failure.assert_awaited_once()
+        mock_token_svc.get_user_token.assert_awaited_once_with("gw1", "user@test.com")
+        gateway_service._handle_gateway_failure.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_auth_code_token_exception(self, gateway_service, monkeypatch):
