@@ -13,7 +13,9 @@ import re
 import shutil
 import subprocess
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, Mock, patch
+from uuid import UUID
 
 # Third-Party
 from fastapi import HTTPException, Request, Response
@@ -2692,8 +2694,9 @@ class TestOAuthIdentity:
         db.execute.return_value.scalar_one_or_none.return_value = self._gateway()
         response = Mock(spec=Response)
         response.headers = {}
+        user = cast(EmailUserResponse, {"email": email})
         with patch("mcpgateway.routers.oauth_router.get_oauth_identity", new=AsyncMock(return_value=identity)):
-            result = await get_oauth_identity_attestation("gateway123", mock_request, response, {"email": email}, db)
+            result = await get_oauth_identity_attestation("gateway123", mock_request, response, user, db)
         jwks = await get_langboard_identity_jwks()
         assert jwks["keys"][0]["x"]
         assert jwks["keys"][0]["kid"] == jwt.get_unverified_header(result["attestation"])["kid"]
@@ -2705,7 +2708,13 @@ class TestOAuthIdentity:
         assert "entra_oid" not in claims
         assert "entra_tid" not in claims
         assert claims["exp"] - claims["iat"] == 60
-        assert claims["jti"]
+        assert str(UUID(claims["jti"])) == claims["jti"]
+        assert UUID(claims["jti"]).version == 4
+        with patch("mcpgateway.routers.oauth_router.get_oauth_identity", new=AsyncMock(return_value=identity)):
+            next_result = await get_oauth_identity_attestation("gateway123", mock_request, response, user, db)
+        next_claims = jwt.decode(next_result["attestation"], private_key.public_key(), algorithms=["EdDSA"], issuer="urn:yam:contextforge", audience="urn:yam:erp-employee-proof")
+        assert str(UUID(next_claims["jti"])) == next_claims["jti"]
+        assert next_claims["jti"] != claims["jti"]
         assert response.headers["Cache-Control"] == "no-store"
 
     @pytest.mark.asyncio

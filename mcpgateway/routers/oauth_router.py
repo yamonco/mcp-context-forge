@@ -23,6 +23,7 @@ import re
 import secrets
 from typing import Annotated, Any, Dict
 from urllib.parse import urlparse, urlunparse
+from uuid import uuid4
 
 # Third-Party
 from cryptography.hazmat.primitives import serialization
@@ -1010,7 +1011,7 @@ async def get_oauth_identity_attestation(
         "iat": issued_at,
         "nbf": issued_at,
         "exp": issued_at + 60,
-        "jti": secrets.token_urlsafe(16),
+        "jti": str(uuid4()),
     }
     response.headers["Cache-Control"] = "no-store"
     return {"attestation": jwt.encode(claims, private_key, algorithm="EdDSA", headers={"kid": kid})}
