@@ -2687,3 +2687,30 @@ class TestOAuthIdentity:
             with pytest.raises(HTTPException) as exc:
                 await get_oauth_identity_attestation("gateway123", mock_request, Mock(spec=Response), {"email": "user@example.com"}, db)
         assert exc.value.status_code == 503
+
+    @pytest.mark.asyncio
+    async def test_attestation_rejects_non_ed25519_signer(self, tmp_path, monkeypatch):
+        from cryptography.hazmat.primitives.asymmetric.ed448 import Ed448PrivateKey
+        from mcpgateway.routers.oauth_router import get_langboard_identity_jwks
+
+        key_path = tmp_path / "wrong-key.pem"
+        key_path.write_bytes(Ed448PrivateKey.generate().private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+        monkeypatch.setattr("mcpgateway.routers.oauth_router.settings.langboard_identity_signing_key_path", str(key_path))
+
+        with pytest.raises(HTTPException) as exc:
+            await get_langboard_identity_jwks()
+        assert exc.value.status_code == 503
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("identity_state, resource, expected_status", [("not_connected", "langboard-api", 409), ("connected", "other-api", 403)])
+    async def test_attestation_rejects_disconnected_identity_or_other_gateway(self, mock_request, identity_state, resource, expected_status):
+        from mcpgateway.routers.oauth_router import get_oauth_identity_attestation
+
+        gateway = self._gateway()
+        gateway.oauth_config["resource"] = resource
+        db = Mock(spec=Session)
+        db.execute.return_value.scalar_one_or_none.return_value = gateway
+        with patch("mcpgateway.routers.oauth_router.get_oauth_identity", new=AsyncMock(return_value={"state": identity_state})):
+            with pytest.raises(HTTPException) as exc:
+                await get_oauth_identity_attestation("gateway123", mock_request, Mock(spec=Response), {"email": "user@example.com"}, db)
+        assert exc.value.status_code == expected_status
