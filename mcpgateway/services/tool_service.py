@@ -85,6 +85,7 @@ from mcpgateway.services.metrics_buffer_service import get_metrics_buffer_servic
 from mcpgateway.services.metrics_cleanup_service import delete_metrics_in_batches, pause_rollup_during_purge
 from mcpgateway.services.metrics_query_service import get_top_performers_combined
 from mcpgateway.services.oauth_manager import OAuthManager
+from mcpgateway.services.oauth_mcp_headers import apply_oauth_mcp_headers
 from mcpgateway.services.observability_service import current_trace_id, ObservabilityService
 from mcpgateway.services.performance_tracker import get_performance_tracker
 from mcpgateway.services.structured_logger import get_structured_logger
@@ -4481,6 +4482,8 @@ class ToolService(BaseService):
         if oauth_authcode_no_db_token and not any(hk.lower() == "authorization" for hk in runtime_headers):
             raise ToolInvocationError(f"Please authorize {gateway_name} first. Visit /oauth/authorize/{gateway_id_str} to complete OAuth flow.")
 
+        if has_gateway and gateway_auth_type == "oauth":
+            runtime_headers = apply_oauth_mcp_headers(runtime_headers, gateway_oauth_config)
         runtime_headers = inject_trace_context_headers(runtime_headers)
 
         plan: Dict[str, Any] = {
@@ -6222,6 +6225,9 @@ class ToolService(BaseService):
                     # but stripping unconditionally prevents leakage when the plugin is disabled,
                     # errors in permissive mode, or the header is mistakenly in passthrough_allowed.
                     headers = {hk: hv for hk, hv in headers.items() if hk.lower() != "x-vault-tokens"}
+
+                    if has_gateway and gateway_auth_type == "oauth":
+                        headers = apply_oauth_mcp_headers(headers, gateway_oauth_config)
 
                     # OAuth authorization_code deny-path: if we entered the no-DB-token branch
                     # above and no plugin (or other auth source) injected an Authorization header,

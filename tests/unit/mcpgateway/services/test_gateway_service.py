@@ -4855,7 +4855,7 @@ async def test_fetch_tools_after_oauth_streamablehttp(gateway_service, monkeypat
     gateway = MagicMock(spec=DbGateway)
     gateway.id = "gw-1"
     gateway.name = "gw"
-    gateway.oauth_config = {"grant_type": "authorization_code"}
+    gateway.oauth_config = {"grant_type": "authorization_code", "mcp_tool_group_uid": "2PdT5OjlxW0"}
     gateway.transport = "streamablehttp"
     gateway.tools = []
     gateway.resources = []
@@ -4897,6 +4897,8 @@ async def test_fetch_tools_after_oauth_streamablehttp(gateway_service, monkeypat
     result_data = await gateway_service.fetch_tools_after_oauth(db, "gw-1", "user@example.com")
 
     assert "capabilities" in result_data
+    authentication = gateway_service.connect_to_streamablehttp_server.await_args.args[1]
+    assert authentication == {"Authorization": "Bearer token", "X-MCP-Tool-Group-UID": "2PdT5OjlxW0"}
 
 
 @pytest.mark.asyncio
