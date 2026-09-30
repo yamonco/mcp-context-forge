@@ -190,13 +190,15 @@ class TokenStorageService:
             logger.error("Failed to store OAuth tokens: %s", str(e))
             raise OAuthError(f"Token storage failed: {str(e)}")
 
-    async def get_user_token(self, gateway_id: str, app_user_email: str, threshold_seconds: int = 300) -> Optional[str]:
+    async def get_user_token(self, gateway_id: str, app_user_email: str, threshold_seconds: Optional[int] = None) -> Optional[str]:
         """Get a valid access token for a specific ContextForge user, refreshing if necessary.
 
         Args:
             gateway_id: ID of the gateway
             app_user_email: ContextForge user email (required)
-            threshold_seconds: Seconds before expiry to consider token expired
+            threshold_seconds: Explicit seconds before expiry to refresh. By default,
+                refresh within the smaller of five minutes or one fifth of the
+                token's stored lifetime.
 
         Returns:
             Valid access token or None if no valid token available for this user
@@ -217,8 +219,12 @@ class TokenStorageService:
                     SecurityValidator.sanitize_log_message(app_user_email),
                 )
 
-            # Check if token is expired or near expiration
-            if self._is_token_expired(token_record, threshold_seconds):
+            # A five-minute token must not refresh on every read.
+            lifetime = _preserve_prior_ttl(token_record) if threshold_seconds is None else None
+            refresh_margin = threshold_seconds
+            if refresh_margin is None:
+                refresh_margin = min(300, max(1, lifetime // 5)) if lifetime is not None else 300
+            if self._is_token_expired(token_record, refresh_margin):
                 logger.info("OAuth token expired for gateway %s, app user %s", SecurityValidator.sanitize_log_message(gateway_id), SecurityValidator.sanitize_log_message(app_user_email))
                 if token_record.refresh_token:
                     # Attempt to refresh token
