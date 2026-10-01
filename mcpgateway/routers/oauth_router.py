@@ -28,7 +28,7 @@ from uuid import uuid4
 # Third-Party
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 import jwt
 from sqlalchemy import select
@@ -39,7 +39,7 @@ from mcpgateway.auth import normalize_token_teams
 from mcpgateway.common.query_params import QueryErrorCode
 from mcpgateway.common.validators import SecurityValidator
 from mcpgateway.config import settings
-from mcpgateway.db import EmailUser, Gateway, OAuthToken, get_db
+from mcpgateway.db import EmailUser, Gateway, OAuthToken, SessionLocal, get_db
 from mcpgateway.middleware.rbac import get_current_user_with_permissions, require_permission
 from mcpgateway.middleware.token_scoping import token_scoping_middleware
 from mcpgateway.schemas import EmailUserResponse
@@ -541,6 +541,19 @@ async def initiate_oauth_flow(gateway_id: str, request: Request, current_user: E
         raise HTTPException(status_code=500, detail="Failed to initiate OAuth flow")
 
 
+async def _import_saved_oauth_catalog(gateway_id: str, app_user_email: str) -> None:
+    """Import after the response using the saved user's token and an owned session."""
+    try:
+        # First-Party
+        from mcpgateway.services.gateway_service import GatewayService
+
+        with SessionLocal() as db:
+            await GatewayService().fetch_tools_after_oauth(db, gateway_id, app_user_email)
+    except Exception:
+        # Token storage already succeeded; the existing fetch-tools action can retry.
+        logger.warning("Saved OAuth grant catalog import did not complete; explicit retry remains available")
+
+
 @oauth_router.get("/callback")
 async def oauth_callback(
     # NOTE on validation strategy for OAuth callback parameters:
@@ -694,19 +707,14 @@ async def oauth_callback(
         logger.info(f"Completed OAuth flow for gateway {SecurityValidator.sanitize_log_message(gateway_id)}, user {SecurityValidator.sanitize_log_message(str(result.get('user_id')))}")
 
         # The email comes only from the server-validated OAuth state, never the callback URL.
-        # TokenStorageService has committed the user's token before we import the catalog.
+        # TokenStorageService has committed the user's token before catalog import.
+        # Send the callback response before network discovery; never retain its DB session.
+        background_tasks = BackgroundTasks()
         import_status = "<p>OAuth token saved. Tool import is unavailable; contact an administrator.</p>"
         app_user_email = result.get("app_user_email")
         if isinstance(app_user_email, str) and app_user_email:
-            try:
-                # First-Party
-                from mcpgateway.services.gateway_service import GatewayService
-
-                imported = await GatewayService().fetch_tools_after_oauth(db, gateway_id, app_user_email)
-                import_status = f"<p>Imported {len(imported.get('tools', []))} tools from the MCP server.</p>"
-            except Exception as import_error:
-                logger.warning("OAuth token saved but tool import failed for gateway %s: %s", SecurityValidator.sanitize_log_message(gateway_id), type(import_error).__name__)
-                import_status = "<p>OAuth token saved, but tool import failed. You can retry below or ask an administrator.</p>"
+            background_tasks.add_task(_import_saved_oauth_catalog, gateway_id, app_user_email)
+            import_status = "<p>OAuth token saved. Tool import is scheduled after this response; use Fetch Tools below if a retry is needed.</p>"
 
         # Return success page with option to return to admin
         # Get CSP nonce for inline script
@@ -823,7 +831,7 @@ async def oauth_callback(
         </body>
         </html>
         """
-        response = HTMLResponse(content=html_content)
+        response = HTMLResponse(content=html_content, background=background_tasks)
         use_secure = (settings.environment == "production") or settings.secure_cookies
         max_age = max(300, settings.csrf_token_expiry)
         response.set_cookie(
