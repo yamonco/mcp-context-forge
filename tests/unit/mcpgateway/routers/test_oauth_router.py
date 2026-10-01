@@ -754,15 +754,21 @@ class TestOAuthRouter:
                 assert oauth_config_passed["resource"] == "https://mcp.example.com"  # Normalized URL
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("import_error", [None, RuntimeError("server unavailable")])
-    async def test_oauth_callback_imports_for_validated_user_after_token_storage(self, mock_db, mock_request, mock_gateway, import_error):
-        """A saved user token triggers catalog import; import failure keeps OAuth success visible."""
+    @pytest.mark.parametrize("import_error", [None, RuntimeError("private-token-and-other-account")])
+    async def test_oauth_callback_imports_for_validated_user_after_token_storage(self, mock_db, mock_request, mock_gateway, import_error, caplog):
+        """Response precedes discovery; import owns its session and uses only validated state."""
         mock_db.execute.return_value.scalar_one_or_none.return_value = mock_gateway
+        mock_request.query_params = {"app_user_email": "other-account@example.com", "gateway_id": "other-gateway"}
         token_result = {"user_id": "idp-user", "app_user_email": "employee@example.com", "expires_at": None, "token_aud": None}
+        owned_db = Mock(spec=Session)
 
-        with patch("mcpgateway.routers.oauth_router.OAuthManager") as oauth_class, patch("mcpgateway.routers.oauth_router.TokenStorageService"), patch(
-            "mcpgateway.services.gateway_service.GatewayService"
-        ) as gateway_class:
+        with (
+            patch("mcpgateway.routers.oauth_router.OAuthManager") as oauth_class,
+            patch("mcpgateway.routers.oauth_router.TokenStorageService"),
+            patch("mcpgateway.services.gateway_service.GatewayService") as gateway_class,
+            patch("mcpgateway.routers.oauth_router.SessionLocal") as session_factory,
+        ):
+            session_factory.return_value.__enter__.return_value = owned_db
             manager = oauth_class.return_value
             manager.resolve_gateway_id_from_state = AsyncMock(return_value="gateway123")
             manager.complete_authorization_code_flow = AsyncMock(return_value=token_result)
@@ -772,16 +778,47 @@ class TestOAuthRouter:
             from mcpgateway.routers.oauth_router import oauth_callback
 
             response = await oauth_callback(code="auth-code", state="opaque-state", request=mock_request, db=mock_db)
+            gateway_service.fetch_tools_after_oauth.assert_not_awaited()
+            session_factory.assert_not_called()
+            assert response.status_code == 200
+            body = response.body.decode()
+            assert "OAuth token saved. Tool import is scheduled" in body
+            assert "Imported 1 tools" not in body
+            assert "other-account@example.com" not in body
+            sent = []
 
-        gateway_service.fetch_tools_after_oauth.assert_awaited_once_with(mock_db, "gateway123", "employee@example.com")
-        assert response.status_code == 200
-        body = response.body.decode()
-        expected = "Imported 1 tools" if import_error is None else "OAuth token saved, but tool import failed"
-        assert expected in body
+            async def send(message):
+                sent.append(message["type"])
+                gateway_service.fetch_tools_after_oauth.assert_not_awaited()
+
+            # Exercise Starlette's native ASGI lifecycle, including post-body background tasks.
+            await response({"type": "http"}, AsyncMock(), send)
+            assert sent == ["http.response.start", "http.response.body"]
+            gateway_service.fetch_tools_after_oauth.assert_awaited_once_with(owned_db, "gateway123", "employee@example.com")
+            session_factory.return_value.__exit__.assert_called_once()
+            assert "private-token-and-other-account" not in caplog.text
+
         if shutil.which("node"):
             script = re.search(r"<script[^>]*>(.*?)</script>", body, re.DOTALL)
             assert script is not None
             subprocess.run(["node", "--check"], input=script.group(1), text=True, capture_output=True, check=True)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("validated_email", [None, "", 17])
+    async def test_oauth_callback_does_not_schedule_import_without_validated_user(self, mock_db, mock_request, mock_gateway, validated_email):
+        """Callback URL names cannot replace a missing server-validated token owner."""
+        mock_db.execute.return_value.scalar_one_or_none.return_value = mock_gateway
+        mock_request.query_params = {"app_user_email": "attacker@example.com"}
+        with patch("mcpgateway.routers.oauth_router.OAuthManager") as oauth_class, patch("mcpgateway.routers.oauth_router.TokenStorageService"):
+            manager = oauth_class.return_value
+            manager.resolve_gateway_id_from_state = AsyncMock(return_value="gateway123")
+            manager.complete_authorization_code_flow = AsyncMock(return_value={"user_id": "idp-user", "app_user_email": validated_email, "token_aud": None})
+            from mcpgateway.routers.oauth_router import oauth_callback
+
+            response = await oauth_callback(code="auth-code", state="opaque-state", request=mock_request, db=mock_db)
+        assert response.status_code == 200
+        assert response.background.tasks == []
+        assert "Tool import is unavailable" in response.body.decode()
 
     @pytest.mark.asyncio
     async def test_oauth_callback_resource_string_persisted_as_is(self, mock_db, mock_request):
@@ -917,6 +954,7 @@ class TestOAuthRouter:
         assert isinstance(result, HTMLResponse)
         assert result.status_code == 400
         assert "Invalid OAuth state parameter" in result.body.decode()
+        assert result.background is None
 
     @pytest.mark.asyncio
     async def test_oauth_callback_invalid_state(self, mock_db, mock_request):
@@ -1031,6 +1069,7 @@ class TestOAuthRouter:
                 assert result.status_code == 400
                 assert "❌ OAuth Authorization Failed" in result.body.decode()
                 assert "Invalid authorization code" in result.body.decode()
+                assert result.background is None
 
     @pytest.mark.asyncio
     async def test_oauth_callback_unexpected_error(self, mock_db, mock_request, mock_gateway):
