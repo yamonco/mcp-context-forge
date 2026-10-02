@@ -23,7 +23,7 @@ from mcpgateway.common.validators import SecurityValidator
 from mcpgateway.config import get_settings
 from mcpgateway.db import OAuthToken
 from mcpgateway.services.encryption_service import get_encryption_service
-from mcpgateway.services.oauth_manager import OAuthError
+from mcpgateway.services.oauth_manager import OAuthError, OAuthUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -238,6 +238,8 @@ class TokenStorageService:
                 return await self.encryption.decrypt_secret_async(token_record.access_token)
             return token_record.access_token
 
+        except OAuthUnavailableError:
+            raise
         except Exception as e:
             logger.error("Failed to retrieve OAuth token: %s", str(e))
             return None
@@ -422,6 +424,8 @@ class TokenStorageService:
 
             return new_access_token
 
+        except OAuthUnavailableError:
+            raise
         except Exception as e:
             logger.error("Failed to refresh OAuth token for gateway %s: %s", token_record.gateway_id, str(e))
             # If refresh fails, we should clear the token to force re-authentication

@@ -45,7 +45,7 @@ from mcpgateway.middleware.token_scoping import token_scoping_middleware
 from mcpgateway.schemas import EmailUserResponse
 from mcpgateway.services.dcr_service import DcrError, DcrService
 from mcpgateway.services.encryption_service import protect_oauth_config_for_storage
-from mcpgateway.services.oauth_manager import OAuthError, OAuthManager
+from mcpgateway.services.oauth_manager import OAuthError, OAuthManager, OAuthUnavailableError
 from mcpgateway.services.token_storage_service import TokenStorageService
 
 # First-Party - CSP nonce support
@@ -958,7 +958,10 @@ async def get_oauth_identity(
     record = db.execute(select(OAuthToken).where(OAuthToken.gateway_id == gateway_id, OAuthToken.app_user_email == email)).scalar_one_or_none()
     if record is None:
         return disconnected
-    token = await TokenStorageService(db).get_user_token(gateway_id, email)
+    try:
+        token = await TokenStorageService(db).get_user_token(gateway_id, email)
+    except OAuthUnavailableError as exc:
+        raise HTTPException(status_code=503, detail="OAuth identity temporarily unavailable") from exc
     if not token:
         return invalid
     claims = await verify_oauth_access_token(token, [issuer], expected_audience=audience)

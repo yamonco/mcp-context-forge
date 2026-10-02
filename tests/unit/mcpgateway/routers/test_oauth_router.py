@@ -2620,6 +2620,23 @@ class TestOAuthIdentity:
         assert "stored-token" not in str(result)
 
     @pytest.mark.asyncio
+    async def test_refresh_unavailable_returns_503_without_identity(self, mock_request):
+        from mcpgateway.routers.oauth_router import get_oauth_identity
+        from mcpgateway.services.oauth_manager import OAuthUnavailableError
+
+        db = self._db(self._gateway(), self._user(), object())
+        with (
+            patch("mcpgateway.routers.oauth_router._enforce_gateway_access", new=AsyncMock()),
+            patch("mcpgateway.routers.oauth_router.TokenStorageService") as storage,
+            patch("mcpgateway.routers.oauth_router.verify_oauth_access_token", new=AsyncMock()) as verify,
+        ):
+            storage.return_value.get_user_token = AsyncMock(side_effect=OAuthUnavailableError("issuer unavailable"))
+            with pytest.raises(HTTPException) as error:
+                await get_oauth_identity("gateway123", mock_request, {"email": "employee@yamon.io"}, db)
+        assert error.value.status_code == 503
+        verify.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_missing_connection_returns_no_identity(self, mock_request):
         from mcpgateway.routers.oauth_router import get_oauth_identity
 
