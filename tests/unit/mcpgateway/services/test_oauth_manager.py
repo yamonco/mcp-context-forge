@@ -1247,7 +1247,7 @@ async def test_refresh_token_http_error(oauth_manager):
     mock_client = AsyncMock()
     mock_client.post.side_effect = httpx.HTTPError("timeout")
     with patch.object(oauth_manager, "_get_client", new_callable=AsyncMock, return_value=mock_client):
-        with pytest.raises(OAuthError, match="Failed to refresh token"):
+        with pytest.raises(OAuthError, match="OAuth token refresh temporarily unavailable"):
             await oauth_manager.refresh_token("old-rt", {"client_id": "cid", "token_url": "https://auth/token"})
 
 
@@ -1262,7 +1262,7 @@ async def test_refresh_token_http_error_retries_with_backoff(oauth_manager):
         patch.object(oauth_manager, "_get_client", new_callable=AsyncMock, return_value=mock_client),
         patch("mcpgateway.services.oauth_manager.asyncio.sleep", new=AsyncMock()) as sleep_mock,
     ):
-        with pytest.raises(OAuthError, match="Failed to refresh token after 2 attempts"):
+        with pytest.raises(OAuthError, match="OAuth token refresh temporarily unavailable"):
             await oauth_manager.refresh_token("old-rt", {"client_id": "cid", "token_url": "https://auth/token"})
 
     sleep_mock.assert_awaited_once_with(1)
@@ -1504,7 +1504,7 @@ async def test_refresh_token_500_retries_then_fails():
     mock_client = AsyncMock()
     mock_client.post.return_value = mock_response
     with patch.object(mgr, "_get_client", new_callable=AsyncMock, return_value=mock_client):
-        with pytest.raises(OAuthError, match="Failed to refresh token after all retry"):
+        with pytest.raises(OAuthError, match="OAuth token refresh temporarily unavailable"):
             await mgr.refresh_token("rt", {"client_id": "cid", "token_url": "https://auth/token"})
 
 
@@ -2041,3 +2041,31 @@ def test_redact_token_response_returns_new_dict():
     payload = {"access_token": "AT", "scope": "repo"}
     OAuthManager._redact_token_response(payload)
     assert payload["access_token"] == "AT"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [429, 500, 503])
+async def test_refresh_retryable_failure_preserves_unavailable_type(oauth_manager, status):
+    """An unavailable issuer must not imply invalid credentials."""
+    from mcpgateway.services.oauth_manager import OAuthUnavailableError
+
+    response = MagicMock(status_code=status)
+    response.headers = {"content-type": "application/json"}
+    response.json.return_value = {"error": "temporarily_unavailable", "error_description": "upstream invalid response"}
+    with patch.object(oauth_manager, "_post_token_request", new=AsyncMock(return_value=response)):
+        with pytest.raises(OAuthUnavailableError):
+            await oauth_manager.refresh_token("test-refresh", {"client_id": "cid", "token_url": "https://auth.example.com/token"})
+
+
+@pytest.mark.asyncio
+async def test_refresh_network_failure_is_unavailable(oauth_manager):
+    """Network failure cannot establish revocation."""
+    import httpx
+    from mcpgateway.services.oauth_manager import OAuthUnavailableError
+
+    with (
+        patch.object(oauth_manager, "_post_token_request", new=AsyncMock(side_effect=httpx.ConnectError("issuer unreachable"))),
+        patch("mcpgateway.services.oauth_manager.asyncio.sleep", new=AsyncMock()),
+    ):
+        with pytest.raises(OAuthUnavailableError):
+            await oauth_manager.refresh_token("test-refresh", {"client_id": "cid", "token_url": "https://auth.example.com/token"})

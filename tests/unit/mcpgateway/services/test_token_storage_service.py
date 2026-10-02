@@ -760,3 +760,27 @@ async def test_get_user_token_no_warning_for_bearer(service, mock_db, caplog):
 
     assert result == "decrypted_value"
     assert not any("token_type" in msg.lower() for msg in caplog.messages)
+
+
+@pytest.mark.asyncio
+async def test_transient_refresh_preserves_record_and_propagates(service, mock_db):
+    """Temporary issuer failure preserves tokens and cannot become a missing grant."""
+    from mcpgateway.services.oauth_manager import OAuthUnavailableError
+
+    record = _make_token_record(expires_at=datetime.now(timezone.utc) - timedelta(hours=1))
+    mock_db.execute.return_value.scalar_one_or_none.return_value = record
+    mock_db.query.return_value.filter.return_value.first.return_value = SimpleNamespace(
+        oauth_config={"client_id": "cid", "token_url": "https://auth.example.com/token"},
+        visibility="public",
+        url="https://mcp.example.com",
+        ca_certificate=None,
+        client_cert=None,
+        client_key=None,
+    )
+    before = (record.access_token, record.refresh_token, record.expires_at)
+    with patch("mcpgateway.services.oauth_manager.OAuthManager.refresh_token", new=AsyncMock(side_effect=OAuthUnavailableError("invalid upstream response"))):
+        with pytest.raises(OAuthUnavailableError):
+            await service.get_user_token("gw-1", "user@test.com")
+    assert (record.access_token, record.refresh_token, record.expires_at) == before
+    mock_db.delete.assert_not_called()
+    mock_db.commit.assert_not_called()

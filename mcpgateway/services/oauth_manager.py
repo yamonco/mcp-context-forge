@@ -1792,9 +1792,11 @@ class OAuthManager:
                 token_data["resource"] = resource
 
         # Attempt token refresh with retries
+        last_status_code = None
         for attempt in range(self.max_retries):
             try:
                 response = await self._post_token_request(token_url, token_data, ca_certificate=ca_certificate, client_cert=client_cert, client_key=client_key, headers=headers)
+                last_status_code = response.status_code
                 if response.status_code == 200:
                     token_response = self._parse_token_response(response)
 
@@ -1817,9 +1819,11 @@ class OAuthManager:
             except httpx.HTTPError as e:
                 logger.warning("Token refresh attempt %s failed: %s", attempt + 1, str(e))
                 if attempt == self.max_retries - 1:
-                    raise OAuthError(f"Failed to refresh token after {self.max_retries} attempts: {str(e)}")
+                    raise OAuthUnavailableError("OAuth token refresh temporarily unavailable") from e
                 await asyncio.sleep(2**attempt)  # Exponential backoff
 
+        if last_status_code == 429 or (last_status_code is not None and last_status_code >= 500):
+            raise OAuthUnavailableError("OAuth token refresh temporarily unavailable")
         raise OAuthError("Failed to refresh token after all retry attempts")
 
     def _extract_user_id(self, token_response: Dict[str, Any], credentials: Dict[str, Any]) -> str:
@@ -1898,6 +1902,10 @@ class OAuthError(Exception):
         ...     isinstance(e, OAuthError)
         True
     """
+
+
+class OAuthUnavailableError(OAuthError):
+    """Temporary upstream refresh failure; stored credentials must be preserved."""
 
 
 class OAuthRequiredError(OAuthError):
