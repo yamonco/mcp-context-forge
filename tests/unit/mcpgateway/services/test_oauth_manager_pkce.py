@@ -20,7 +20,7 @@ import httpx
 import pytest
 
 # First-Party
-from mcpgateway.services.oauth_manager import OAuthError, OAuthManager
+from mcpgateway.services.oauth_manager import OAuthError, OAuthManager, OAuthUnavailableError
 
 
 class TestPKCEGeneration:
@@ -983,14 +983,14 @@ class TestOAuthManagerRefreshToken:
         client.post = AsyncMock(return_value=response)
         monkeypatch.setattr(manager, "_get_client", AsyncMock(return_value=client))
 
-        with pytest.raises(OAuthError, match="Failed to refresh token"):
+        with pytest.raises(OAuthUnavailableError, match="OAuth token refresh temporarily unavailable"):
             await manager.refresh_token("refresh", credentials)
 
         call_data = client.post.call_args[1]["data"]
         assert isinstance(call_data, list)
 
         client.post = AsyncMock(side_effect=httpx.HTTPError("boom"))
-        with pytest.raises(OAuthError, match="Failed to refresh token"):
+        with pytest.raises(OAuthUnavailableError, match="OAuth token refresh temporarily unavailable"):
             await manager.refresh_token("refresh", credentials)
 
 
@@ -2129,7 +2129,7 @@ class TestRefreshTokenEdgeCases:
         client.post = AsyncMock(return_value=response)
         monkeypatch.setattr(manager, "_get_client", AsyncMock(return_value=client))
 
-        with pytest.raises(OAuthError, match="Failed to refresh token after all retry attempts"):
+        with pytest.raises(OAuthUnavailableError, match="OAuth token refresh temporarily unavailable"):
             await manager.refresh_token("refresh", credentials)
 
     @pytest.mark.asyncio
