@@ -6443,9 +6443,7 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
                         logger.warning("OAuth token validation for gateway %s: %s", gateway_name, warning)
                     if token_validation.blocking_errors:
                         detail = "; ".join(token_validation.blocking_errors)
-                        raise GatewayConnectionError(
-                            f"Refusing to forward OAuth token for gateway '{gateway_name}': {detail}. Fix oauth_config (resource/scopes/issuer) or the IdP token request."
-                        )
+                        raise GatewayConnectionError(f"Refusing to forward OAuth token for gateway '{gateway_name}': {detail}. Fix oauth_config (resource/scopes/issuer) or the IdP token request.")
                     pre_auth_headers = apply_oauth_mcp_headers({"Authorization": f"Bearer {access_token}"}, gateway_oauth_config)
                 except Exception as e:
                     oauth_error = str(e)
