@@ -6391,7 +6391,7 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
         start_time = time.monotonic()
 
         pre_auth_headers = {}
-        token_exchange_error: Optional[str] = None
+        oauth_error: Optional[str] = None
 
         # Check if gateway exists before acquiring lock
         with fresh_db_session() as db:
@@ -6418,12 +6418,40 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
                         client_key=getattr(gateway, "client_key", None),
                     )
                 except Exception as e:
-                    token_exchange_error = str(e)
+                    oauth_error = str(e)
+            elif gateway_grant_type == "authorization_code":
+                # Manual discovery must use the requesting user's personal grant.
+                # First-Party
+                from mcpgateway.services.token_storage_service import TokenStorageService  # pylint: disable=import-outside-toplevel
+                from mcpgateway.services.token_validation_service import validate_oauth_token_claims  # pylint: disable=import-outside-toplevel
+
+                try:
+                    if not user_email:
+                        raise GatewayConnectionError(f"User authentication required for OAuth gateway {gateway_name}")
+                    access_token = await TokenStorageService(db).get_user_token(gateway_id, user_email)
+                    if not access_token:
+                        raise GatewayConnectionError(
+                            f"No OAuth tokens found for user {user_email} on gateway {gateway_name}. Please complete the OAuth authorization flow first at /oauth/authorize/{gateway_id}"
+                        )
+                    token_validation = validate_oauth_token_claims(
+                        access_token=access_token,
+                        oauth_config=gateway_oauth_config,
+                        gateway_url=gateway.url,
+                        gateway_name=gateway_name,
+                    )
+                    for warning in token_validation.warnings:
+                        logger.warning("OAuth token validation for gateway %s: %s", gateway_name, warning)
+                    if token_validation.blocking_errors:
+                        detail = "; ".join(token_validation.blocking_errors)
+                        raise GatewayConnectionError(f"Refusing to forward OAuth token for gateway '{gateway_name}': {detail}. Fix oauth_config (resource/scopes/issuer) or the IdP token request.")
+                    pre_auth_headers = apply_oauth_mcp_headers({"Authorization": f"Bearer {access_token}"}, gateway_oauth_config)
+                except Exception as e:
+                    oauth_error = str(e)
             elif request_headers:
                 # Get passthrough headers if request headers provided
                 pre_auth_headers = get_passthrough_headers(request_headers, {}, db, gateway)
 
-        if token_exchange_error is not None:
+        if oauth_error is not None:
             return {
                 "tools_added": 0,
                 "tools_removed": 0,
@@ -6435,7 +6463,7 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
                 "resources_updated": 0,
                 "prompts_updated": 0,
                 "success": False,
-                "error": token_exchange_error,
+                "error": oauth_error,
                 "validation_errors": [],
                 "duration_ms": (time.monotonic() - start_time) * 1000,
                 "refreshed_at": datetime.now(timezone.utc),

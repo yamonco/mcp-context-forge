@@ -22,6 +22,7 @@ from typing import TypeVar
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 # Third-Party
+import jwt
 from pydantic import ValidationError
 import pytest
 from url_normalize import url_normalize
@@ -3433,6 +3434,82 @@ class TestGatewayRefresh:
                 # Verify headers passed to internal method
                 args, kwargs = gateway_service._refresh_gateway_tools_resources_prompts.call_args
                 assert kwargs["pre_auth_headers"] == {"x-custom": "value"}
+
+    @pytest.mark.asyncio
+    async def test_manual_refresh_authorization_code_uses_requesting_user_grant(self, gateway_service, mock_gateway_with_relations, mock_db_session):
+        """Personal OAuth discovery uses the caller's grant and configured catalog header."""
+        mock_gateway_with_relations.oauth_config = {"grant_type": "authorization_code", "mcp_tool_group_uid": "configured-group"}
+        session = mock_db_session.__enter__.return_value
+        session.execute.return_value = _make_execute_result(scalar=mock_gateway_with_relations)
+        lock = gateway_service._get_refresh_lock("gw-123")
+
+        async def refresh(**kwargs):
+            assert lock.locked()
+            assert kwargs["pre_auth_headers"] == {"Authorization": "Bearer personal-grant", "X-MCP-Tool-Group-UID": "configured-group"}
+            assert kwargs["_user_email"] == "requester@example.com"
+            return {"success": True, "tools_added": 3, "tools_removed": 0, "resources_added": 0, "resources_removed": 0, "prompts_added": 0, "prompts_removed": 0}
+
+        gateway_service._refresh_gateway_tools_resources_prompts = AsyncMock(side_effect=refresh)
+        with (
+            patch("mcpgateway.services.gateway_service.fresh_db_session", return_value=mock_db_session),
+            patch("mcpgateway.services.token_storage_service.TokenStorageService") as storage,
+            patch("mcpgateway.services.gateway_service.get_passthrough_headers") as passthrough,
+        ):
+            storage.return_value.get_user_token = AsyncMock(return_value="personal-grant")
+            result = await gateway_service.refresh_gateway_manually(
+                "gw-123", user_email="requester@example.com", request_headers={"Authorization": "Bearer inbound-jwt", "X-MCP-Tool-Group-UID": "caller-group"}
+            )
+
+            storage.return_value.get_user_token.assert_awaited_once_with("gw-123", "requester@example.com")
+            passthrough.assert_not_called()
+            gateway_service._refresh_gateway_tools_resources_prompts.assert_awaited_once()
+            assert result["success"] is True
+            assert result["tools_added"] == 3
+            assert not lock.locked()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "user_email,claims,error",
+        [
+            (None, None, "User authentication required"),
+            ("requester@example.com", None, "No OAuth tokens found"),
+            ("requester@example.com", {"aud": "wrong-resource"}, "audience"),
+            ("requester@example.com", {"scope": "wrong-scope"}, "scope"),
+            ("requester@example.com", {"iss": "https://wrong-issuer.example"}, "issuer"),
+        ],
+    )
+    async def test_manual_refresh_authorization_code_fails_before_discovery(self, gateway_service, mock_gateway_with_relations, mock_db_session, user_email, claims, error):
+        """Absent personal grants and present-but-wrong claims fail before discovery."""
+        mock_gateway_with_relations.url = "https://mcp.example/mcp"
+        mock_gateway_with_relations.oauth_config = {
+            "grant_type": "authorization_code",
+            "resource": "https://mcp.example/mcp",
+            "scopes": ["tools.read"],
+            "issuer": "https://issuer.example",
+        }
+        session = mock_db_session.__enter__.return_value
+        session.execute.return_value = _make_execute_result(scalar=mock_gateway_with_relations)
+        gateway_service._refresh_gateway_tools_resources_prompts = AsyncMock()
+        access_token = jwt.encode(claims, "", algorithm="none") if claims is not None else None
+        with (
+            patch("mcpgateway.services.gateway_service.fresh_db_session", return_value=mock_db_session),
+            patch("mcpgateway.services.token_storage_service.TokenStorageService") as storage,
+            patch("mcpgateway.services.gateway_service.get_passthrough_headers") as passthrough,
+            patch.object(gateway_service, "_get_refresh_lock") as get_lock,
+        ):
+            storage.return_value.get_user_token = AsyncMock(return_value=access_token)
+            result = await gateway_service.refresh_gateway_manually("gw-123", user_email=user_email, request_headers={"Authorization": "Bearer inbound-jwt"})
+
+            assert result["success"] is False
+            assert error in result["error"]
+            assert result["tools_added"] == 0
+            gateway_service._refresh_gateway_tools_resources_prompts.assert_not_awaited()
+            passthrough.assert_not_called()
+            get_lock.assert_not_called()
+            if user_email:
+                storage.return_value.get_user_token.assert_awaited_once_with("gw-123", user_email)
+            else:
+                storage.return_value.get_user_token.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_manual_refresh_token_exchange_gateway_uses_exchanged_token(self, gateway_service, mock_gateway_with_relations, mock_db_session):
